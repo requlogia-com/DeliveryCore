@@ -5,6 +5,7 @@ import com.deliverycore.model.PlaceholderContext;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,6 +19,7 @@ public class ActiveEvent {
     private final String deliveryName;
     private final String resolvedCategory;
     private final String resolvedItem;
+    private final List<String> acceptedItems;
     private final ZonedDateTime startTime;
     private ZonedDateTime endTime; // Mutable - manuel başlatmada değiştirilebilir
     private final ZoneId timezone;
@@ -41,9 +43,15 @@ public class ActiveEvent {
             ZonedDateTime startTime,
             ZonedDateTime endTime,
             ZoneId timezone) {
+        this(deliveryName, resolvedCategory, List.of(resolvedItem), startTime, endTime, timezone);
+    }
+
+    public ActiveEvent(String deliveryName, String resolvedCategory, List<String> acceptedItems,
+                       ZonedDateTime startTime, ZonedDateTime endTime, ZoneId timezone) {
         this.deliveryName = deliveryName;
         this.resolvedCategory = resolvedCategory;
-        this.resolvedItem = resolvedItem;
+        this.acceptedItems = List.copyOf(acceptedItems);
+        this.resolvedItem = this.acceptedItems.get(0);
         this.startTime = startTime;
         this.endTime = endTime;
         this.timezone = timezone;
@@ -60,6 +68,10 @@ public class ActiveEvent {
     
     public String getResolvedItem() {
         return resolvedItem;
+    }
+
+    public List<String> getAcceptedItems() {
+        return acceptedItems;
     }
     
     public ZonedDateTime getStartTime() {

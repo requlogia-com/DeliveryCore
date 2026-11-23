@@ -197,4 +197,35 @@ webhook:
 
 data:
   auto-save-interval: 5
-  file: "data.yml"
+  # yaml, sqlite or mysql. An empty SQL database imports data.yml at startup.
+  storage: yaml
+  sqlite:
+    file: "deliverycore.db"
+  mysql:
+    # Use a dedicated schema for each DeliveryCore server. Restart after changing storage.
+    url: "jdbc:mysql://localhost:3306/deliverycore"
+    username: "deliverycore"
+    password: ""
+
+# Slot numaraları 0'dan başlar. Her menüde slotların benzersiz olması gerekir.
+menus:
+  main:
+    size: 54
+    active: [11, 12, 13, 14, 15]
+    waiting: [29, 30, 31, 32, 33]
+    leaderboard: 47
+    help: 51
+  delivery:
+    size: 45
+    info: 4
+    inventory: 20
+    chest: 24
+    back: 40
+    previous: 36
+    next: 44
+    milestones: [28, 29, 30, 31, 32, 33, 34]
+  leaderboard:
+    size: 54
+    empty: 22
+    back: 49
+    entries: [13, 21, 23, 29, 30, 31, 32, 33, 38, 42]

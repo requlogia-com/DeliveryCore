@@ -16,6 +16,7 @@ public final class ItemValidator {
     
     // Pattern for lowercase vanilla names (e.g., diamond, stone, oak_log)
     private static final Pattern LOWERCASE_VANILLA_PATTERN = Pattern.compile("^[a-z][a-z0-9_]*$");
+    private static final Pattern ITEMSADDER_PATTERN = Pattern.compile("^itemsadder:[a-z][a-z0-9_-]*:[a-z][a-z0-9_/.-]*$");
     
     private ItemValidator() {
         // Utility class
@@ -38,6 +39,7 @@ public final class ItemValidator {
         
         return VANILLA_PATTERN.matcher(itemName).matches()
             || NAMESPACED_PATTERN.matcher(itemName).matches()
+            || ITEMSADDER_PATTERN.matcher(itemName).matches()
             || LOWERCASE_VANILLA_PATTERN.matcher(itemName).matches();
     }
 }

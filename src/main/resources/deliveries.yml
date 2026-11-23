@@ -17,6 +17,11 @@
 #     mode: random              → Kategoriden rastgele eşya seç
 #     mode: fixed               → Sabit eşya kullan
 #       value: DIAMOND          → Eşya adı
+#     mode: all                 → Seçilen kategorideki bütün eşyaları kabul et
+#
+#   accepted-items: [WHEAT, CARROT, "custom:crop", "itemsadder:farm:tomato", "nexo:pear", "oraxen:corn"]
+#     Bu liste kullanıldığında item seçiminin yerine geçer. Her eşya aynı toplamı artırır.
+#     Özel eşyayı kaydederken kullandığınız adı custom: ön ekiyle yazın.
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 # ZAMANLAMA
@@ -25,6 +30,12 @@
 #   schedule:
 #     start: "every day 20:00"      → Her gün 20:00'da başla
 #     end: "every day 21:00"        → Her gün 21:00'da bitir
+#
+#   Bir kerelik etkinlik için start ve end alanlarına tam tarih yazın.
+#   Desteklenen biçimler: "23/11/2026 20:00:00" veya "2026-11-23T20:00:00".
+#   Tam tarihli start ile end: "1h" yazılırsa etkinlik her saat yenilenir.
+#   İsteğe bağlı repeat: "3h", başlangıçlar arasında üç saat bırakır.
+#   Süre birimleri: s (saniye), m (dakika), h (saat), d (gün), w (hafta).
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 # WEBHOOK

@@ -12,5 +12,8 @@ public enum SelectionMode {
     /**
      * Use a fixed, specified value.
      */
-    FIXED
+    FIXED,
+
+    /** Use every configured item in the selected category. */
+    ALL
 }

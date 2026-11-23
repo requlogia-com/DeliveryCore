@@ -10,8 +10,13 @@ import java.util.Objects;
  */
 public record ScheduleConfig(
     String start,
-    String end
+    String end,
+    String repeat
 ) {
+    public ScheduleConfig(String start, String end) {
+        this(start, end, "");
+    }
+
     /**
      * Creates a new ScheduleConfig with validation.
      *
@@ -22,5 +27,6 @@ public record ScheduleConfig(
     public ScheduleConfig {
         Objects.requireNonNull(start, "Schedule start cannot be null");
         Objects.requireNonNull(end, "Schedule end cannot be null");
+        Objects.requireNonNull(repeat, "Schedule repeat cannot be null");
     }
 }

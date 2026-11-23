@@ -7,7 +7,7 @@ import com.deliverycore.model.ValidationError;
 import com.deliverycore.service.ActiveEvent;
 import com.deliverycore.service.DeliveryService;
 
-import java.time.ZonedDateTime;
+import java.time.Duration;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.function.BiConsumer;
@@ -457,18 +457,12 @@ public class CommandHandler {
         }
 
         // Başlat (force=true ile enabled kontrolünü atla)
-        Optional<ActiveEvent> eventOpt = deliveryService.startEvent(name, true);
+        DeliveryDefinition def = defOpt.get();
+        int finalWinnerCount = winnerCount > 0 ? winnerCount : def.winnerCount();
+        Optional<ActiveEvent> eventOpt = deliveryService.startManualEvent(
+            name, Duration.ofMinutes(durationMinutes), finalWinnerCount);
         if (eventOpt.isPresent()) {
             ActiveEvent e = eventOpt.get();
-            DeliveryDefinition def = defOpt.get();
-            
-            // Bitiş zamanını ayarla
-            ZonedDateTime endTime = ZonedDateTime.now().plusMinutes(durationMinutes);
-            e.setEndTime(endTime);
-            
-            // Kazanan sayısını ayarla (override veya config'den)
-            int finalWinnerCount = winnerCount > 0 ? winnerCount : def.winnerCount();
-            e.setWinnerCount(finalWinnerCount);
             
             // Otomatik bitiş için zamanlayıcı
             scheduleManualEventEnd(name, durationMinutes);

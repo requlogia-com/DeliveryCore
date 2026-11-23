@@ -1,6 +1,12 @@
 package com.deliverycore.gui;
 
 import com.deliverycore.config.ConfigManager;
+import com.deliverycore.item.DeliveryItemRegistry;
+import com.deliverycore.service.CategoryMilestones;
+import org.bukkit.inventory.InventoryHolder;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
 import com.deliverycore.service.ActiveEvent;
 import com.deliverycore.service.DeliveryService;
 import org.bukkit.Bukkit;
@@ -32,6 +38,26 @@ public class DeliveryGUI {
     
     // Dil desteği
     private Supplier<String> languageSupplier;
+    private CategoryMilestones milestones;
+    private DeliveryItemRegistry itemRegistry;
+    private BiConsumer<Player, ActiveEvent> inventoryAction;
+    private MenuLayout mainLayout = MenuLayout.main();
+    private MenuLayout deliveryLayout = MenuLayout.delivery();
+    private MenuLayout rankingLayout = MenuLayout.ranking();
+
+    public void setMilestones(CategoryMilestones milestones) { this.milestones = milestones; }
+    public void setItemRegistry(DeliveryItemRegistry itemRegistry) { this.itemRegistry = itemRegistry; }
+    public void setInventoryAction(BiConsumer<Player, ActiveEvent> action) { this.inventoryAction = action; }
+
+    public void loadLayouts(YamlConfiguration config) {
+        mainLayout = MenuLayout.from(config, "main", MenuLayout.main());
+        deliveryLayout = MenuLayout.from(config, "delivery", MenuLayout.delivery());
+        rankingLayout = MenuLayout.from(config, "leaderboard", MenuLayout.ranking());
+    }
+
+    public String getAcceptedItemDisplay(ActiveEvent event) {
+        return event.getAcceptedItems().stream().map(this::getItemDisplayName).collect(Collectors.joining(", "));
+    }
     private File dataFolder;
     private YamlConfiguration langConfig;
 
@@ -242,23 +268,25 @@ public class DeliveryGUI {
 
     public void openMainMenu(Player player) {
         boolean isEnglish = "en".equals(getCurrentLanguage());
-        Inventory inv = Bukkit.createInventory(null, 54, getMainTitle());
+        Menu menu = new Menu(mainLayout.size(), getMainTitle());
+        Inventory inv = menu.getInventory();
         
         ItemStack bg = createItem(Material.BLACK_STAINED_GLASS_PANE, " ");
-        for (int i = 0; i < 54; i++) inv.setItem(i, bg);
+        for (int i = 0; i < inv.getSize(); i++) inv.setItem(i, bg);
 
         // Aktif teslimatlar (slot 11-15 üst sıra)
         var events = deliveryService.getAllActiveEvents();
-        int[] activeSlots = {11, 12, 13, 14, 15};
+        int[] activeSlots = mainLayout.group("active");
         
         for (int i = 0; i < events.size() && i < activeSlots.length; i++) {
             ActiveEvent event = events.get(i);
             inv.setItem(activeSlots[i], createDeliveryItem(player, event));
+            menu.onClick(activeSlots[i], viewer -> openDeliveryMenu(viewer, event));
         }
         
         // Bekleyen teslimatlar (slot 29-33 alt sıra) - aktif olmayan ama enabled olanlar
         var allDeliveries = configManager.getDeliveryConfig().getEnabledDeliveries();
-        int[] waitingSlots = {29, 30, 31, 32, 33};
+        int[] waitingSlots = mainLayout.group("waiting");
         int waitingIndex = 0;
         
         for (var delivery : allDeliveries) {
@@ -266,7 +294,9 @@ public class DeliveryGUI {
             if (isActive) continue;
             
             if (waitingIndex < waitingSlots.length) {
-                inv.setItem(waitingSlots[waitingIndex], createWaitingDeliveryItem(delivery));
+                int slot = waitingSlots[waitingIndex];
+                inv.setItem(slot, createWaitingDeliveryItem(delivery));
+                menu.onClick(slot, viewer -> viewer.sendMessage(isEnglish ? "§7This delivery has not started." : "§7Bu teslimat henüz başlamadı."));
                 waitingIndex++;
             }
         }
@@ -275,7 +305,8 @@ public class DeliveryGUI {
         String leaderboardName = isEnglish ? sc("leaderboard") : sc("siralama");
         String leaderboardLore = isEnglish ? sc("see top deliverers") : sc("en cok teslim edenleri gor");
         String clickText = isEnglish ? sc("click") : sc("tikla");
-        inv.setItem(47, createHead(HEAD_TOP, "§b" + leaderboardName, Arrays.asList(
+        menu.onClick(mainLayout.slot("leaderboard"), this::openLeaderboard);
+        inv.setItem(mainLayout.slot("leaderboard"), createHead(HEAD_TOP, "§b" + leaderboardName, Arrays.asList(
             "",
             "§7" + leaderboardLore,
             "",
@@ -285,7 +316,11 @@ public class DeliveryGUI {
         // Yardım butonu (slot 51)
         String helpName = isEnglish ? sc("help") : sc("yardim");
         String helpLore = isEnglish ? sc("learn about the system") : sc("teslimat sistemini ogren");
-        inv.setItem(51, createHead(HEAD_HELP, "§f" + helpName, Arrays.asList(
+        menu.onClick(mainLayout.slot("help"), viewer -> {
+            viewer.closeInventory();
+            viewer.performCommand("teslimat help");
+        });
+        inv.setItem(mainLayout.slot("help"), createHead(HEAD_HELP, "§f" + helpName, Arrays.asList(
             "",
             "§7" + helpLore,
             "",
@@ -347,7 +382,7 @@ public class DeliveryGUI {
 
     private ItemStack createDeliveryItem(Player player, ActiveEvent event) {
         boolean isEnglish = "en".equals(getCurrentLanguage());
-        String itemName = getItemDisplayName(event.getResolvedItem());
+        String itemName = getAcceptedItemDisplay(event);
         String deliveryName = getDeliveryDisplayName(event.getDeliveryName());
         int playerCount = event.getPlayerDeliveries().getOrDefault(player.getUniqueId(), 0);
         int totalCount = event.getPlayerDeliveries().values().stream().mapToInt(Integer::intValue).sum();
@@ -378,14 +413,23 @@ public class DeliveryGUI {
     // ═══════════════════════════════════════════════════════════════════════════
 
     public void openDeliveryMenu(Player player, ActiveEvent event) {
+        openDeliveryMenu(player, event, 0);
+    }
+
+    private void openDeliveryMenu(Player player, ActiveEvent event, int page) {
+        if (deliveryService.getActiveEvent(event.getDeliveryName()).orElse(null) != event) {
+            openMainMenu(player);
+            return;
+        }
         boolean isEnglish = "en".equals(getCurrentLanguage());
         String deliveryName = getDeliveryDisplayName(event.getDeliveryName());
-        Inventory inv = Bukkit.createInventory(null, 45, getDeliveryPrefix() + deliveryName);
+        Menu menu = new Menu(deliveryLayout.size(), getDeliveryPrefix() + deliveryName);
+        Inventory inv = menu.getInventory();
         
         ItemStack bg = createItem(Material.BLACK_STAINED_GLASS_PANE, " ");
-        for (int i = 0; i < 45; i++) inv.setItem(i, bg);
+        for (int i = 0; i < inv.getSize(); i++) inv.setItem(i, bg);
 
-        String itemName = getItemDisplayName(event.getResolvedItem());
+        String itemName = getAcceptedItemDisplay(event);
         int playerCount = event.getPlayerDeliveries().getOrDefault(player.getUniqueId(), 0);
         int totalCount = event.getPlayerDeliveries().values().stream().mapToInt(Integer::intValue).sum();
         int rank = calculateRank(event, player.getUniqueId());
@@ -408,7 +452,8 @@ public class DeliveryGUI {
         String returnMainText = isEnglish ? sc("return to main menu") : sc("ana menuye don");
 
         // Bilgi (slot 4)
-        inv.setItem(4, createHead(HEAD_DELIVERY, "§e" + deliveryName, Arrays.asList(
+        ItemStack icon = itemRegistry == null ? null : itemRegistry.createItem(event.getResolvedItem());
+        inv.setItem(deliveryLayout.slot("info"), withDescription(icon == null ? createHead(HEAD_DELIVERY, "", List.of()) : icon, "§e" + deliveryName, Arrays.asList(
             "",
             "§7" + requiredItemText,
             "§f  " + itemName,
@@ -421,7 +466,11 @@ public class DeliveryGUI {
         )));
 
         // Envanterden teslim et (slot 20)
-        inv.setItem(20, createHead(HEAD_INVENTORY, "§a" + deliverFromInvText, Arrays.asList(
+        menu.onClick(deliveryLayout.slot("inventory"), viewer -> {
+            viewer.closeInventory();
+            if (inventoryAction != null) inventoryAction.accept(viewer, event);
+        });
+        inv.setItem(deliveryLayout.slot("inventory"), createHead(HEAD_INVENTORY, "§a" + deliverFromInvText, Arrays.asList(
             "",
             "§7" + allItemsText,
             "§f" + itemName + " §7" + itemsDeliverText,
@@ -430,7 +479,13 @@ public class DeliveryGUI {
         )));
 
         // Sandıktan teslim et (slot 24)
-        inv.setItem(24, createHead(HEAD_CHEST, "§6" + deliverFromChestText, Arrays.asList(
+        menu.onClick(deliveryLayout.slot("chest"), viewer -> {
+            viewer.closeInventory();
+            if (deliveryService.getActiveEvent(event.getDeliveryName()).orElse(null) != event) return;
+            startChestSelection(viewer, event.getDeliveryName());
+            viewer.sendMessage(isEnglish ? "§aRight-click a chest within 10 seconds." : "§a10 saniye içinde bir sandığa sağ tıkla.");
+        });
+        inv.setItem(deliveryLayout.slot("chest"), createHead(HEAD_CHEST, "§6" + deliverFromChestText, Arrays.asList(
             "",
             "§7" + rightClickChestText,
             "§7" + insideText + " §f" + itemName,
@@ -442,11 +497,13 @@ public class DeliveryGUI {
         )));
 
         // Geri butonu (slot 40)
-        inv.setItem(40, createHead(HEAD_BACK, "§c" + backText, Arrays.asList(
+        menu.onClick(deliveryLayout.slot("back"), this::openMainMenu);
+        inv.setItem(deliveryLayout.slot("back"), createHead(HEAD_BACK, "§c" + backText, Arrays.asList(
             "",
             "§7" + returnMainText
         )));
 
+        showMilestones(player, event, page, menu, isEnglish);
         player.openInventory(inv);
     }
 
@@ -457,16 +514,17 @@ public class DeliveryGUI {
 
     public void openLeaderboard(Player player) {
         boolean isEnglish = "en".equals(getCurrentLanguage());
-        Inventory inv = Bukkit.createInventory(null, 54, getLeaderboardTitle());
+        Menu menu = new Menu(rankingLayout.size(), getLeaderboardTitle());
+        Inventory inv = menu.getInventory();
         
         ItemStack bg = createItem(Material.BLACK_STAINED_GLASS_PANE, " ");
-        for (int i = 0; i < 54; i++) inv.setItem(i, bg);
+        for (int i = 0; i < inv.getSize(); i++) inv.setItem(i, bg);
 
         var events = deliveryService.getAllActiveEvents();
         if (events.isEmpty()) {
             String noActiveText = isEnglish ? sc("no active delivery") : sc("aktif teslimat yok");
             String waitingText = isEnglish ? sc("waiting for delivery event") : sc("siralama icin teslimat bekleniyor");
-            inv.setItem(22, createHead(HEAD_HELP, "§7" + noActiveText, Arrays.asList(
+            inv.setItem(rankingLayout.slot("empty"), createHead(HEAD_HELP, "§7" + noActiveText, Arrays.asList(
                 "",
                 "§8" + waitingText
             )));
@@ -479,7 +537,7 @@ public class DeliveryGUI {
                 .limit(10)
                 .toList();
 
-            int[] slots = {13, 21, 23, 29, 30, 31, 32, 33, 38, 42};
+            int[] slots = rankingLayout.group("entries");
             String[] colors = {"§6", "§f", "§c", "§7", "§7", "§7", "§7", "§7", "§7", "§7"};
             
             String deliveriesText = isEnglish ? sc("deliveries") : sc("teslimat");
@@ -488,7 +546,7 @@ public class DeliveryGUI {
                 String name = getPlayerName(entry.getKey());
                 
                 inv.setItem(slots[i], createPlayerHead(entry.getKey(), 
-                    colors[i] + "#" + (i + 1) + " " + name, Arrays.asList(
+                    colors[Math.min(i, colors.length - 1)] + "#" + (i + 1) + " " + name, Arrays.asList(
                     "",
                     "§7" + deliveriesText + " §e" + entry.getValue()
                 )));
@@ -497,7 +555,8 @@ public class DeliveryGUI {
 
         String backText = isEnglish ? sc("back") : sc("geri");
         String returnMainText = isEnglish ? sc("return to main menu") : sc("ana menuye don");
-        inv.setItem(49, createHead(HEAD_BACK, "§c" + backText, Arrays.asList(
+        menu.onClick(rankingLayout.slot("back"), this::openMainMenu);
+        inv.setItem(rankingLayout.slot("back"), createHead(HEAD_BACK, "§c" + backText, Arrays.asList(
             "",
             "§7" + returnMainText
         )));
@@ -629,6 +688,68 @@ public class DeliveryGUI {
             }
         } catch (Exception e) {
             // Debug: System.out.println("[DeliveryGUI] Texture hatası: " + e.getMessage());
+        }
+    }
+
+    private void showMilestones(Player player, ActiveEvent event, int page, Menu menu, boolean english) {
+        if (milestones == null) return;
+        String category = event.getResolvedCategory();
+        var entries = milestones.getMilestones(category);
+        var progress = milestones.getProgress(player.getUniqueId(), category);
+        int[] slots = deliveryLayout.group("milestones");
+        int from = page * slots.length;
+        Inventory inv = menu.getInventory();
+        for (int i = 0; i < slots.length && from + i < entries.size(); i++) {
+            var entry = entries.get(from + i);
+            boolean complete = progress.claimed().contains(entry.id());
+            String status = complete ? (english ? "Completed" : "Tamamlandı")
+                    : (english ? "In progress" : "Devam ediyor");
+            inv.setItem(slots[i], withDescription(new ItemStack(complete ? Material.LIME_DYE : Material.PAPER),
+                    (complete ? "§a" : "§e") + entry.name(),
+                    List.of("§7" + status, "§f" + progress.amount() + " §7/ §f" + entry.amount())));
+        }
+        if (page > 0) addPageButton(event, page - 1, menu, "previous",
+                english ? "§ePrevious page" : "§eÖnceki sayfa");
+        if (from + slots.length < entries.size()) addPageButton(event, page + 1, menu, "next",
+                english ? "§eNext page" : "§eSonraki sayfa");
+    }
+
+    private void addPageButton(ActiveEvent event, int page, Menu menu, String key, String title) {
+        int slot = deliveryLayout.slot(key);
+        menu.getInventory().setItem(slot, createItem(Material.ARROW, title));
+        menu.onClick(slot, viewer -> openDeliveryMenu(viewer, event, page));
+    }
+
+    private ItemStack withDescription(ItemStack item, String name, List<String> lore) {
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            meta.setDisplayName(name);
+            meta.setLore(lore);
+            item.setItemMeta(meta);
+        }
+        return item;
+    }
+
+    public static final class Menu implements InventoryHolder {
+        private final Inventory inventory;
+        private final Map<Integer, Consumer<Player>> actions = new HashMap<>();
+
+        private Menu(int size, String title) {
+            inventory = Bukkit.createInventory(this, size, title);
+        }
+
+        private void onClick(int slot, Consumer<Player> action) {
+            actions.put(slot, action);
+        }
+
+        public void click(Player player, int slot) {
+            Consumer<Player> action = actions.get(slot);
+            if (action != null) action.accept(player);
+        }
+
+        @Override
+        public Inventory getInventory() {
+            return inventory;
         }
     }
 }

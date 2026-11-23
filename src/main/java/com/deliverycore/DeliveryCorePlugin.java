@@ -5,6 +5,14 @@ import com.deliverycore.command.DeliverCommand;
 import com.deliverycore.config.ConfigManager;
 import com.deliverycore.config.ConfigManagerImpl;
 import com.deliverycore.gui.DeliveryGUI;
+import com.deliverycore.item.DeliveryItemRegistry;
+import com.deliverycore.event.DeliveryStartEvent;
+import com.deliverycore.event.DeliveryEndEvent;
+import com.deliverycore.placeholder.DeliveryExpansion;
+import com.deliverycore.service.ActiveEvent;
+import com.deliverycore.service.CategoryMilestones;
+import com.deliverycore.service.InventoryDelivery;
+import org.bukkit.inventory.Inventory;
 import com.deliverycore.placeholder.PlaceholderEngine;
 import com.deliverycore.placeholder.PlaceholderEngineImpl;
 import com.deliverycore.reward.PendingRewardStore;
@@ -65,6 +73,11 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
     private ScheduledExecutorService executorService;
     private LoggingService loggingService;
     private DataManager dataManager;
+    private DeliveryItemRegistry itemRegistry;
+    private CategoryMilestones categoryMilestones;
+    private Runnable unregisterPlaceholders = () -> {};
+    private boolean initialized;
+    private final java.util.Map<String, org.bukkit.scheduler.BukkitTask> expiryTasks = new java.util.HashMap<>();
 
     private String currentLanguage = "tr";
 
@@ -86,15 +99,22 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
             executorService = Executors.newScheduledThreadPool(2);
 
             dataManager = new DataManager(this);
+            itemRegistry = new DeliveryItemRegistry(this);
+            categoryMilestones = new CategoryMilestones(dataManager);
+            reloadMilestones();
 
             initializeServices();
             loadConfigurations();
             registerListeners();
-            resumeActiveEvents();
             loadSavedEvents();
+            resumeActiveEvents();
+            if (Bukkit.getPluginManager().isPluginEnabled("PlaceholderAPI")) {
+                unregisterPlaceholders = DeliveryExpansion.registerFor(this);
+            }
 
             deliveryGUI.loadItemsConfig(getDataFolder());
 
+            initialized = true;
             long loadTime = System.currentTimeMillis() - startTime;
             getLogger().info("Basariyla yuklendi! (" + loadTime + "ms)");
 
@@ -108,16 +128,14 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
     public void onDisable() {
         getLogger().info("DeliveryCore kapatiliyor...");
 
-        if (deliveryService != null && dataManager != null) {
-            var activeEvents = deliveryService.getAllActiveEvents();
-            if (!activeEvents.isEmpty()) {
-                dataManager.saveAllActiveEvents(activeEvents);
-            }
+        unregisterPlaceholders.run();
+        if (initialized) {
+            dataManager.saveAllActiveEvents(deliveryService.getAllActiveEvents());
             dataManager.saveDataSync();
         }
 
         if (executorService != null && !executorService.isShutdown()) {
-            executorService.shutdown();
+            executorService.shutdownNow();
         }
 
         getLogger().info("Kapatildi!");
@@ -157,8 +175,17 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         pendingRewardStore = new PendingRewardStoreImpl();
 
         SchedulerServiceImpl schedulerImpl = new SchedulerServiceImpl(executorService);
-        schedulerImpl.setEventStartCallback(this::handleEventStart);
-        schedulerImpl.setEventEndCallback(this::handleEventEnd);
+        schedulerImpl.setEventStartCallback(name -> {
+            var window = schedulerImpl.getScheduledEventInfos().get(name);
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (window != null && schedulerImpl.getScheduledEventInfos().get(name) == window
+                        && window.scheduledEnd().isAfter(java.time.ZonedDateTime.now())) {
+                    handleScheduledEventEnd(name);
+                    handleEventStart(name);
+                }
+            });
+        });
+        schedulerImpl.setEventEndCallback(name -> Bukkit.getScheduler().runTask(this, () -> handleScheduledEventEnd(name)));
         schedulerService = schedulerImpl;
 
         webhookService = new WebhookServiceImpl(placeholderEngine);
@@ -170,7 +197,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
     private void handleEventStart(String deliveryName) {
         if (deliveryService != null) {
             deliveryService.startEvent(deliveryName).ifPresent(event -> {
-                String itemTR = deliveryGUI.getItemDisplayName(event.getResolvedItem());
+                String itemTR = deliveryGUI.getAcceptedItemDisplay(event);
                 String catTR = deliveryGUI.getCategoryDisplayName(event.getResolvedCategory());
                 String delTR = deliveryGUI.getDeliveryDisplayName(deliveryName);
 
@@ -193,12 +220,34 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         }
     }
 
+    private void handleScheduledEventEnd(String deliveryName) {
+        deliveryService.getActiveEvent(deliveryName).filter(event -> !event.isActive())
+                .ifPresent(event -> handleEventEnd(deliveryName));
+    }
+
+    @EventHandler(priority = org.bukkit.event.EventPriority.MONITOR)
+    public void onDeliveryStart(DeliveryStartEvent event) {
+        if (deliveryService.getActiveEvent(event.getDeliveryName()).orElse(null) == event.getActiveEvent()) {
+            dataManager.saveActiveEvent(event.getActiveEvent());
+            scheduleExpiry(event.getActiveEvent());
+        }
+    }
+
+    @EventHandler(priority = org.bukkit.event.EventPriority.MONITOR)
+    public void onDeliveryEnd(DeliveryEndEvent event) {
+        if (deliveryService.getActiveEvent(event.getDeliveryName()).isEmpty()) {
+            var task = expiryTasks.remove(event.getDeliveryName());
+            if (task != null) task.cancel();
+            dataManager.removeActiveEvent(event.getDeliveryName());
+        }
+    }
+
     private void handleEventEnd(String deliveryName) {
         if (deliveryService != null) {
             var activeEvent = deliveryService.getActiveEvent(deliveryName);
-            String item = activeEvent.map(e -> e.getResolvedItem()).orElse("unknown");
+            if (activeEvent.isEmpty()) return;
+            String itemTR = deliveryGUI.getAcceptedItemDisplay(activeEvent.orElseThrow());
             String category = activeEvent.map(e -> e.getResolvedCategory()).orElse("unknown");
-            String itemTR = deliveryGUI.getItemDisplayName(item);
             String catTR = deliveryGUI.getCategoryDisplayName(category);
             String delTR = deliveryGUI.getDeliveryDisplayName(deliveryName);
 
@@ -440,6 +489,9 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         deliveryGUI = new DeliveryGUI(configManager, deliveryService);
         deliveryGUI.setLanguageSupplier(this::getCurrentLanguage);
         deliveryGUI.setDataFolder(getDataFolder());
+        deliveryGUI.setMilestones(categoryMilestones);
+        deliveryGUI.setInventoryAction(this::deliverFromInventory);
+        deliveryGUI.setItemRegistry(itemRegistry);
         loadGUISettings();
 
         deliverCommand = new DeliverCommand(
@@ -455,20 +507,30 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         commandHandler.setManualEndScheduler(this::scheduleManualEnd);
         commandHandler.setWebhookTester(this::testWebhook);
         deliverCommand.setDeliveryService(deliveryService);
+        deliverCommand.setInventorySubmission((player, event, count) ->
+                submitInventory(player, player.getInventory(), event, count));
     }
 
     /**
      * Manuel başlatılan etkinlik için otomatik bitiş zamanlayıcısı
      */
     private void scheduleManualEnd(String deliveryName, Long durationMinutes) {
-        long ticks = durationMinutes * 60 * 20; // dakika -> tick (20 tick = 1 saniye)
+        var expected = deliveryService.getActiveEvent(deliveryName).orElse(null);
+        if (expected != null) scheduleExpiry(expected);
+    }
 
-        Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (deliveryService.getActiveEvent(deliveryName).isPresent()) {
-                handleEventEnd(deliveryName);
-                getLogger().info("[DeliveryCore] Manuel etkinlik süresi doldu: " + deliveryName);
+    private void scheduleExpiry(ActiveEvent expected) {
+        String name = expected.getDeliveryName();
+        long millis = java.time.Duration.between(java.time.Instant.now(), expected.getEndTime().toInstant()).toMillis();
+        var task = Bukkit.getScheduler().runTaskLater(this, () -> {
+            expiryTasks.remove(name);
+            if (deliveryService.getActiveEvent(name).orElse(null) == expected) {
+                if (expected.isActive()) scheduleExpiry(expected);
+                else handleEventEnd(name);
             }
-        }, ticks);
+        }, Math.max(1L, millis / 50L + 1L));
+        var previous = expiryTasks.put(name, task);
+        if (previous != null) previous.cancel();
     }
 
     /**
@@ -510,7 +572,18 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
     /**
      * Tüm ayarları yeniden yükler (reload komutu için)
      */
+    private void reloadMilestones() {
+        categoryMilestones.reload(new File(getDataFolder(), "categories.yml"));
+    }
+
     private void reloadAllSettings() {
+        reloadConfig();
+        reloadMilestones();
+        categoryService = new CategoryServiceImpl(configManager.getCategoryConfig());
+        ((DeliveryServiceImpl) deliveryService).reloadConfiguration(configManager.getDeliveryConfig(), categoryService);
+        ((SchedulerServiceImpl) schedulerService).getScheduledEventInfos().keySet()
+                .forEach(schedulerService::cancelScheduledEvent);
+        resumeActiveEvents();
         // Dil ayarını yeniden yükle
         loadLanguageSetting();
 
@@ -532,6 +605,8 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
             File configFile = new File(getDataFolder(), "config.yml");
             if (configFile.exists()) {
                 YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
+
+                deliveryGUI.loadLayouts(config);
 
                 // Kategori display names
                 ConfigurationSection catDisplaySection = config.getConfigurationSection("category-display-names");
@@ -608,6 +683,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
                 // ActiveEvent oluştur ve servise ekle
                 var activeEvent = savedData.toActiveEvent();
                 ((DeliveryServiceImpl) deliveryService).restoreEvent(activeEvent);
+                scheduleExpiry(activeEvent);
 
                 getLogger().info("  + " + savedData.deliveryName() + " (yuklendi, " +
                     savedData.playerDeliveries().size() + " oyuncu verisi)");
@@ -633,21 +709,22 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
     public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
-        String title = event.getView().getTitle();
-        if (!DeliveryGUI.isDeliveryGUI(title)) return;
-
+        if (!(event.getView().getTopInventory().getHolder() instanceof DeliveryGUI.Menu menu)) return;
         event.setCancelled(true);
+        if (event.getRawSlot() >= 0 && event.getRawSlot() < menu.getInventory().getSize()) {
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (player.getOpenInventory().getTopInventory().getHolder() == menu) {
+                    menu.click(player, event.getRawSlot());
+                }
+            });
+        }
+    }
 
-        if (event.getCurrentItem() == null) return;
-
-        int slot = event.getRawSlot();
-
-        if (DeliveryGUI.isMainMenu(title)) {
-            handleMainMenuClick(player, slot);
-        } else if (DeliveryGUI.isDeliveryMenu(title)) {
-            handleDeliveryMenuClick(player, slot, title);
-        } else if (DeliveryGUI.isLeaderboardMenu(title)) {
-            handleLeaderboardClick(player, slot);
+    @EventHandler
+    public void onInventoryDrag(org.bukkit.event.inventory.InventoryDragEvent event) {
+        if (event.getView().getTopInventory().getHolder() instanceof DeliveryGUI.Menu
+                && event.getRawSlots().stream().anyMatch(slot -> slot < event.getView().getTopInventory().getSize())) {
+            event.setCancelled(true);
         }
     }
 
@@ -789,202 +866,32 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         return false; // Kilit yok
     }
 
-    private void handleMainMenuClick(Player player, int slot) {
-        // Sıralama butonu (slot 47)
-        if (slot == 47) {
-            deliveryGUI.openLeaderboard(player);
-            return;
-        }
-
-        // Yardım butonu (slot 51)
-        if (slot == 51) {
-            player.closeInventory();
-            player.performCommand("teslimat help");
-            return;
-        }
-
-        // Aktif teslimatlar 11-15 slotlarında - tıklayınca detay menüsü aç
-        if (slot >= 11 && slot <= 15) {
-            var events = deliveryService.getAllActiveEvents();
-            int index = slot - 11;
-            if (index < events.size()) {
-                var activeEvent = events.get(index);
-                deliveryGUI.openDeliveryMenu(player, activeEvent);
-            }
-        }
-
-        // Bekleyen teslimatlar 29-33 slotlarında - tıklanamaz (sadece bilgi)
-        // Tıklandığında mesaj göster
-        if (slot >= 29 && slot <= 33) {
-            player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §7Bu teslimat henüz başlamadı!");
-        }
+    private void deliverFromInventory(Player player, ActiveEvent activeEvent) {
+        submitInventory(player, player.getInventory(), activeEvent, Integer.MAX_VALUE);
     }
 
-    private void handleDeliveryMenuClick(Player player, int slot, String title) {
-        // Teslimat adını title'dan çıkar
-        String deliveryDisplayName = title.replace(DeliveryGUI.DELIVERY_PREFIX, "");
-
-        // Aktif event'i bul
-        var activeEvent = deliveryService.getAllActiveEvents().stream()
-            .filter(e -> deliveryGUI.getDeliveryDisplayName(e.getDeliveryName()).equals(deliveryDisplayName))
-            .findFirst()
-            .orElse(null);
-
-        if (activeEvent == null) {
-            player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §cTeslimat artik aktif degil!");
-            deliveryGUI.openMainMenu(player);
-            return;
-        }
-
-        // Envanterden teslim et (slot 20)
-        if (slot == 20) {
-            player.closeInventory();
-            deliverFromInventory(player, activeEvent);
-            return;
-        }
-
-        // Sandıktan teslim et (slot 24)
-        if (slot == 24) {
-            player.closeInventory();
-            deliveryGUI.startChestSelection(player, activeEvent.getDeliveryName());
-            player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §aBir sandığa sağ tıkla! §7(10 saniye)");
-            return;
-        }
-
-        // Geri butonu (slot 40)
-        if (slot == 40) {
-            deliveryGUI.openMainMenu(player);
-        }
+    private void deliverFromRealChestInventory(Player player, Inventory inventory, ActiveEvent activeEvent) {
+        submitInventory(player, inventory, activeEvent, Integer.MAX_VALUE);
     }
 
-    private void handleLeaderboardClick(Player player, int slot) {
-        if (slot == 49) {
-            deliveryGUI.openMainMenu(player);
-        }
-    }
-
-    private void deliverFromInventory(Player player, com.deliverycore.service.ActiveEvent activeEvent) {
-        String requiredItem = activeEvent.getResolvedItem();
-        org.bukkit.Material material;
-        try {
-            material = org.bukkit.Material.valueOf(requiredItem.toUpperCase());
-        } catch (Exception e) {
-            player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §cGeçersiz eşya: §f" + requiredItem);
+    private void submitInventory(Player player, Inventory inventory, ActiveEvent event, int limit) {
+        int delivered = InventoryDelivery.submit(player, inventory, event, limit, itemRegistry,
+                (DeliveryServiceImpl) deliveryService);
+        if (delivered < 0) return;
+        if (delivered == 0) {
+            player.sendMessage("§cTeslim edilecek uygun eşya bulunamadı.");
             return;
         }
-
-        int count = 0;
-        for (var item : player.getInventory().getContents()) {
-            if (item != null && item.getType() == material) {
-                count += item.getAmount();
-            }
-        }
-
-        if (count == 0) {
-            String itemName = deliveryGUI.getItemDisplayName(requiredItem);
-            player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §cEnvanterinde §e" + itemName + " §cyok!");
-            return;
-        }
-
-        // Envanterdeki eşyaları kaldır
-        int remaining = count;
-        org.bukkit.inventory.ItemStack[] contents = player.getInventory().getContents();
-        for (int i = 0; i < contents.length && remaining > 0; i++) {
-            var item = contents[i];
-            if (item != null && item.getType() == material) {
-                int itemAmount = item.getAmount();
-                if (itemAmount <= remaining) {
-                    remaining -= itemAmount;
-                    player.getInventory().setItem(i, null);
-                } else {
-                    item.setAmount(itemAmount - remaining);
-                    remaining = 0;
-                }
-            }
-        }
-
-        int delivered = count - remaining;
-        deliveryService.recordDelivery(player.getUniqueId(), activeEvent.getDeliveryName(), delivered);
-
-        // Veriyi kaydet ve oyuncu ismini cache'le
-        if (dataManager != null) {
-            dataManager.saveActiveEvent(activeEvent);
-            dataManager.updatePlayerStats(player.getUniqueId(), player.getName(), delivered);
-        }
+        dataManager.saveActiveEvent(event);
+        dataManager.updatePlayerStats(player.getUniqueId(), player.getName(), delivered);
         deliveryGUI.cachePlayerName(player.getUniqueId(), player.getName());
+        categoryMilestones.record(player, event.getResolvedCategory(), delivered);
 
-        int total = activeEvent.getPlayerDeliveries().getOrDefault(player.getUniqueId(), 0);
-        int rank = calculateRank(activeEvent, player.getUniqueId());
-        String itemName = deliveryGUI.getItemDisplayName(requiredItem);
-
-        player.sendTitle("§a§lTESLİM EDİLDİ!", "§e" + delivered + " §7adet §f" + itemName, 10, 50, 10);
-        player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §a" + delivered + " §7adet §e" + itemName + " §7teslim edildi!");
-        player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §7Toplam: §f" + total + " §8| §7Sıra: §e#" + rank);
-
-        try { player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f); } catch (Exception ignored) {}
-    }
-
-    private void deliverFromRealChestInventory(Player player, org.bukkit.inventory.Inventory chestInv, com.deliverycore.service.ActiveEvent activeEvent) {
-        String requiredItem = activeEvent.getResolvedItem();
-        org.bukkit.Material material;
-        try {
-            material = org.bukkit.Material.valueOf(requiredItem.toUpperCase());
-        } catch (Exception e) {
-            player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §cGeçersiz eşya: §f" + requiredItem);
-            return;
-        }
-
-        int count = 0;
-
-        // Sandıktaki eşyaları say (double chest dahil)
-        for (var item : chestInv.getContents()) {
-            if (item != null && item.getType() == material) {
-                count += item.getAmount();
-            }
-        }
-
-        if (count == 0) {
-            String itemName = deliveryGUI.getItemDisplayName(requiredItem);
-            player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §cSandıkta §e" + itemName + " §cyok!");
-            return;
-        }
-
-        // Sandıktaki eşyaları kaldır
-        int remaining = count;
-        org.bukkit.inventory.ItemStack[] contents = chestInv.getContents();
-        for (int i = 0; i < contents.length && remaining > 0; i++) {
-            var item = contents[i];
-            if (item != null && item.getType() == material) {
-                int itemAmount = item.getAmount();
-                if (itemAmount <= remaining) {
-                    remaining -= itemAmount;
-                    chestInv.setItem(i, null);
-                } else {
-                    item.setAmount(itemAmount - remaining);
-                    remaining = 0;
-                }
-            }
-        }
-
-        int delivered = count - remaining;
-        deliveryService.recordDelivery(player.getUniqueId(), activeEvent.getDeliveryName(), delivered);
-
-        // Veriyi kaydet ve oyuncu ismini cache'le
-        if (dataManager != null) {
-            dataManager.saveActiveEvent(activeEvent);
-            dataManager.updatePlayerStats(player.getUniqueId(), player.getName(), delivered);
-        }
-        deliveryGUI.cachePlayerName(player.getUniqueId(), player.getName());
-
-        int total = activeEvent.getPlayerDeliveries().getOrDefault(player.getUniqueId(), 0);
-        int rank = calculateRank(activeEvent, player.getUniqueId());
-        String itemName = deliveryGUI.getItemDisplayName(requiredItem);
-
-        player.sendTitle("§a§lTESLİM EDİLDİ!", "§e" + delivered + " §7adet §f" + itemName, 10, 50, 10);
-        player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §a" + delivered + " §7adet §e" + itemName + " §7sandıktan teslim edildi!");
-        player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §7Toplam: §f" + total + " §8| §7Sıra: §e#" + rank);
-
-        try { player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f); } catch (Exception ignored) {}
+        int total = event.getPlayerDeliveryCount(player.getUniqueId());
+        int rank = calculateRank(event, player.getUniqueId());
+        player.sendTitle("§a§lTESLİM EDİLDİ!", "§e" + delivered + " §7adet", 10, 50, 10);
+        player.sendMessage("§a" + delivered + " §7adet teslim edildi. Toplam: §f" + total + " §8| §7Sıra: §e#" + rank);
+        player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
     }
 
     // Eski metod - uyumluluk için
@@ -1078,14 +985,15 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
 
         return switch (cmdName) {
             case "deliverycore" -> commandHandler.handleCommand(senderName, args);
-            case "teslimat" -> {
+            case "teslimat", "delivery" -> {
+                if (args.length > 0 && handleDeliveryAdmin(sender, args)) yield true;
                 if (!(sender instanceof Player)) {
                     sender.sendMessage("§cBu komut sadece oyuncular kullanabilir.");
                     yield true;
                 }
                 yield deliverCommand.handleTeslimatCommand(senderName, senderUuid, args);
             }
-            case "teslim" -> {
+            case "teslim", "deliver" -> {
                 if (!(sender instanceof Player)) {
                     sender.sendMessage("§cBu komut sadece oyuncular kullanabilir.");
                     yield true;
@@ -1103,11 +1011,69 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
 
         return switch (cmdName) {
             case "deliverycore" -> commandHandler.handleTabComplete(senderName, args);
-            case "teslimat" -> deliverCommand.handleTeslimatTabComplete(senderName, args);
-            case "teslim" -> deliverCommand.handleTeslimTabComplete(senderName, args);
+            case "teslimat", "delivery" -> {
+                if (sender.hasPermission("deliverycore.admin") && args.length == 1) {
+                    yield java.util.stream.Stream.of("help", "info", "top", "set", "reset", "customitem", "removecustomitem")
+                            .filter(value -> value.startsWith(args[0].toLowerCase(java.util.Locale.ROOT))).toList();
+                }
+                yield deliverCommand.handleTeslimatTabComplete(senderName, args);
+            }
+            case "teslim", "deliver" -> deliverCommand.handleTeslimTabComplete(senderName, args);
             default -> List.of();
         };
     }
+
+    private boolean handleDeliveryAdmin(CommandSender sender, String[] args) {
+        String action = args[0].toLowerCase(java.util.Locale.ROOT);
+        if (!List.of("set", "reset", "customitem", "removecustomitem").contains(action)) return false;
+        if (!sender.hasPermission("deliverycore.admin")) {
+            sender.sendMessage("§cBu komut için yetkiniz yok.");
+            return true;
+        }
+        try {
+            switch (action) {
+                case "customitem" -> {
+                    if (args.length != 2 || !(sender instanceof Player player)) {
+                        sender.sendMessage("§e/delivery customitem <id> (eşya elinizde olmalı)");
+                    } else {
+                        itemRegistry.register(args[1], player.getInventory().getItemInMainHand());
+                        sender.sendMessage("§aÖzel eşya kaydedildi: " + args[1]);
+                    }
+                }
+                case "removecustomitem" -> {
+                    if (args.length != 2) sender.sendMessage("§e/delivery removecustomitem <id>");
+                    else sender.sendMessage(itemRegistry.remove(args[1]) ? "§aÖzel eşya silindi." : "§cÖzel eşya bulunamadı.");
+                }
+                default -> {
+                    boolean reset = action.equals("reset");
+                    if (args.length != (reset ? 3 : 4)) {
+                        sender.sendMessage("§e/delivery " + action + " <oyuncu> <kategori>" + (reset ? "" : " <miktar>"));
+                        return true;
+                    }
+                    String category = configManager.getCategoryConfig().getCategoryNames().stream()
+                            .filter(name -> name.equalsIgnoreCase(args[2])).findFirst().orElse(null);
+                    if (category == null) throw new IllegalArgumentException("Kategori bulunamadı: " + args[2]);
+                    Player online = Bukkit.getPlayerExact(args[1]);
+                    org.bukkit.OfflinePlayer target = online != null ? online : java.util.Arrays.stream(Bukkit.getOfflinePlayers())
+                            .filter(player -> args[1].equalsIgnoreCase(player.getName())
+                                    || args[1].equalsIgnoreCase(player.getUniqueId().toString()))
+                            .findFirst().orElse(null);
+                    if (target == null) throw new IllegalArgumentException("Oyuncu bulunamadı: " + args[1]);
+                    long amount = reset ? 0 : Long.parseLong(args[3]);
+                    if (amount < 0) throw new IllegalArgumentException("Miktar negatif olamaz.");
+                    categoryMilestones.setProgress(target.getUniqueId(), category, amount);
+                    sender.sendMessage("§a" + args[1] + " / " + category + " ilerlemesi: " + amount);
+                }
+            }
+        } catch (NumberFormatException e) {
+            sender.sendMessage("§cGeçersiz miktar.");
+        } catch (IllegalArgumentException | java.io.IOException e) {
+            sender.sendMessage("§c" + e.getMessage());
+        }
+        return true;
+    }
+
+    public CategoryMilestones getCategoryMilestones() { return categoryMilestones; }
 
     private boolean checkPermission(String playerName, String permission) {
         if ("CONSOLE".equals(playerName)) {

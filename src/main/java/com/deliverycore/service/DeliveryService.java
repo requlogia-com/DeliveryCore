@@ -2,6 +2,7 @@ package com.deliverycore.service;
 
 import com.deliverycore.model.Winner;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -28,6 +29,15 @@ public interface DeliveryService {
      * @return the started ActiveEvent, or empty if the delivery doesn't exist
      */
     Optional<ActiveEvent> startEvent(String deliveryName, boolean force);
+
+    /** Starts a manual delivery with its configured duration and winner count. */
+    default Optional<ActiveEvent> startManualEvent(String deliveryName, Duration duration, int winnerCount) {
+        return startEvent(deliveryName, true).map(event -> {
+            event.setEndTime(event.getStartTime().plus(duration));
+            event.setWinnerCount(winnerCount);
+            return event;
+        });
+    }
     
     /**
      * Ends a delivery event and calculates winners.

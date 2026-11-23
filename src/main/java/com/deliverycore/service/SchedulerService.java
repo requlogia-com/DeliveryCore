@@ -47,6 +47,13 @@ public interface SchedulerService {
      * @return an Optional containing the next occurrence, empty if invalid
      */
     Optional<ZonedDateTime> getNextOccurrence(String expression, ZoneId timezone);
+
+    /**
+     * Resolves a delivery's end for an actual start, using its scheduled window when applicable.
+     */
+    default Optional<ZonedDateTime> getEventEndTime(DeliveryDefinition delivery, ZonedDateTime actualStart, boolean manual) {
+        return getNextOccurrence(delivery.schedule().end(), actualStart.getZone());
+    }
     
     /**
      * Resumes any active events after server restart.

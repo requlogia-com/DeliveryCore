@@ -85,6 +85,14 @@ categories:
   # ═══════════════════════════════════════════════════════════════════════════════
   
   farm:
+    # Optional delivery milestones. The amount is cumulative across events in this category.
+    # milestones:
+    #   first-harvest:
+    #     name: "İlk Hasat"
+    #     amount: 100
+    #     commands: ["give {player} emerald 1"]
+    #     premium-permission: deliverycore.premium
+    #     premium-commands: ["give {player} emerald 3"]
     items:
       WHEAT: 3
       CARROT: 4

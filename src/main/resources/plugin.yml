@@ -18,6 +18,9 @@ description: |
 website: https://modrinth.com/plugin/delicerycore
 softdepend:
   - PlaceholderAPI
+  - ItemsAdder
+  - Nexo
+  - Oraxen
   - Vault
   - HolographicDisplays
   - DecentHolograms
@@ -43,8 +46,8 @@ commands:
   # Oyuncu teslimat menüsü (İngilizce)
   delivery:
     description: Opens delivery menu
-    usage: /<command> [info|top]
-    aliases: [deliver, deliverymenu, dm]
+    usage: /<command> [info|top|set|reset|customitem|removecustomitem]
+    aliases: [deliverymenu, dm]
     permission: deliverycore.use
   
   # Hızlı teslimat komutu (Türkçe)

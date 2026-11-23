@@ -2,10 +2,10 @@ package com.deliverycore.service;
 
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.io.File;
 import java.io.IOException;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -22,95 +22,67 @@ import java.util.logging.Logger;
  */
 public class DataManager {
 
-    private static final String DATA_FILE = "data.yml";
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ISO_ZONED_DATE_TIME;
 
     private final JavaPlugin plugin;
-    private final File dataFile;
+    private final DataStorage storage;
     private final Logger logger;
     private YamlConfiguration data;
 
-    private boolean isDirty = false;
+    private boolean isDirty;
     private final Object lock = new Object();
+    private final Object storageLock = new Object();
 
     public DataManager(JavaPlugin plugin) {
         this.plugin = plugin;
         this.logger = plugin.getLogger();
-        this.dataFile = new File(plugin.getDataFolder(), DATA_FILE);
+        this.storage = DataStorage.open(plugin.getDataFolder().toPath(), plugin.getConfig());
         loadData();
         startAutoSaveTask();
     }
 
-    /**
-     * Veri dosyasını yükler.
-     */
     public void loadData() {
-        synchronized (lock) {
-            if (!dataFile.exists()) {
+        synchronized (storageLock) {
+            synchronized (lock) {
                 try {
-                    if (!dataFile.getParentFile().exists()) {
-                        boolean ignored = dataFile.getParentFile().mkdirs();
-                    }
-                    boolean ignored = dataFile.createNewFile();
-                    data = new YamlConfiguration();
-                    saveDataSync();
-                    logger.info("[DataManager] Yeni veri dosyası oluşturuldu: " + DATA_FILE);
-                } catch (IOException e) {
-                    logger.log(Level.SEVERE, "Veri dosyası oluşturulamadı!", e);
+                    data = YamlDataStorage.parse(storage.load());
+                    isDirty = false;
+                } catch (IOException | InvalidConfigurationException e) {
+                    throw new IllegalStateException("Unable to initialize DeliveryCore data storage", e);
                 }
-            } else {
-                data = YamlConfiguration.loadConfiguration(dataFile);
-                logger.info("[DataManager] Veri dosyası yüklendi: " + DATA_FILE);
             }
         }
     }
 
-    /**
-     * Otomatik kayıt görevini başlatır.
-     * config.yml'den süre alınabilir, şimdilik sabit 5 dakika.
-     */
     private void startAutoSaveTask() {
-        Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
-            if (isDirty) {
-                saveDataAsync();
-            }
-        }, 6000L, 6000L);
-    }
-
-    /**
-     * Veriyi asenkron olarak kaydeder.
-     */
-    private void saveDataAsync() {
-        synchronized (lock) {
-            if (!isDirty) return;
-            try {
-                data.save(dataFile);
-                isDirty = false;
-            } catch (IOException e) {
-                logger.warning("[DataManager] Asenkron kayıt hatası: " + e.getMessage());
-            }
+        long interval = plugin.getConfig().getInt("data.auto-save-interval", 5) * 1200L;
+        if (interval > 0) {
+            Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> save(false), interval, interval);
         }
     }
 
-    /**
-     * Veriyi senkron (anlık) olarak kaydeder.
-     * Sunucu kapanırken çağrılmalı.
-     */
     public void saveDataSync() {
-        synchronized (lock) {
-            try {
-                data.save(dataFile);
+        save(true);
+    }
+
+    private void save(boolean force) {
+        synchronized (storageLock) {
+            String snapshot;
+            synchronized (lock) {
+                if (!force && !isDirty) return;
+                snapshot = data.saveToString();
                 isDirty = false;
-                logger.info("[DataManager] Veriler diske yazıldı.");
+            }
+            try {
+                storage.save(snapshot);
             } catch (IOException e) {
-                logger.warning("[DataManager] Kayıt hatası: " + e.getMessage());
+                synchronized (lock) {
+                    isDirty = true;
+                }
+                logger.log(Level.WARNING, "Unable to save DeliveryCore progress", e);
             }
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    // AKTİF ETKİNLİK İŞLEMLERİ
-    // ═══════════════════════════════════════════════════════════════
 
     public void saveActiveEvent(ActiveEvent event) {
         synchronized (lock) {
@@ -118,6 +90,8 @@ public class DataManager {
 
             data.set(path + ".category", event.getResolvedCategory());
             data.set(path + ".item", event.getResolvedItem());
+            data.set(path + ".accepted-items", event.getAcceptedItems());
+            data.set(path + ".winner-count", event.getWinnerCount());
             data.set(path + ".start-time", event.getStartTime() != null ? event.getStartTime().format(DATE_FORMAT) : null);
             data.set(path + ".end-time", event.getEndTime() != null ? event.getEndTime().format(DATE_FORMAT) : null);
             data.set(path + ".timezone", event.getTimezone() != null ? event.getTimezone().getId() : "Europe/Istanbul");
@@ -134,6 +108,7 @@ public class DataManager {
     public void saveAllActiveEvents(List<ActiveEvent> events) {
         synchronized (lock) {
             data.set("active-events", null);
+            isDirty = true;
             for (ActiveEvent event : events) {
                 saveActiveEvent(event);
             }
@@ -151,6 +126,16 @@ public class DataManager {
                     String path = "active-events." + deliveryName;
                     String category = data.getString(path + ".category");
                     String item = data.getString(path + ".item");
+                    List<String> acceptedItems = data.getStringList(path + ".accepted-items");
+                    if (acceptedItems.isEmpty()) {
+                        if (item == null || item.isBlank()) {
+                            throw new IllegalArgumentException("Saved event has no accepted items");
+                        }
+                        acceptedItems = List.of(item);
+                    } else {
+                        item = acceptedItems.get(0);
+                    }
+                    int winnerCount = data.getInt(path + ".winner-count", 1);
                     String startTimeStr = data.getString(path + ".start-time");
                     String endTimeStr = data.getString(path + ".end-time");
                     String timezoneStr = data.getString(path + ".timezone", "Europe/Istanbul");
@@ -171,7 +156,8 @@ public class DataManager {
                         }
                     }
 
-                    events.add(new SavedEventData(deliveryName, category, item, startTime, endTime, timezone, playerDeliveries));
+                    events.add(new SavedEventData(deliveryName, category, item, startTime, endTime, timezone,
+                        playerDeliveries, List.copyOf(acceptedItems), winnerCount));
                 } catch (Exception e) {
                     logger.warning("[DataManager] Etkinlik yüklenemedi: " + deliveryName + " - " + e.getMessage());
                 }
@@ -223,12 +209,43 @@ public class DataManager {
         }
     }
 
-    public record SavedEventData(String deliveryName, String category, String item, ZonedDateTime startTime, ZonedDateTime endTime, ZoneId timezone, Map<UUID, Integer> playerDeliveries) {
+    public record SavedEventData(String deliveryName, String category, String item, ZonedDateTime startTime,
+                                 ZonedDateTime endTime, ZoneId timezone, Map<UUID, Integer> playerDeliveries,
+                                 List<String> acceptedItems, int winnerCount) {
+        public SavedEventData(String deliveryName, String category, String item, ZonedDateTime startTime,
+                              ZonedDateTime endTime, ZoneId timezone, Map<UUID, Integer> playerDeliveries) {
+            this(deliveryName, category, item, startTime, endTime, timezone, playerDeliveries, List.of(item), 1);
+        }
+
         public ActiveEvent toActiveEvent() {
-            ActiveEvent event = new ActiveEvent(deliveryName, category, item, startTime, endTime, timezone);
+            ActiveEvent event = new ActiveEvent(deliveryName, category, acceptedItems, startTime, endTime, timezone);
+            event.setWinnerCount(winnerCount);
             playerDeliveries.forEach(event::recordDelivery);
             return event;
         }
     }
+    public CategoryProgress getCategoryProgress(UUID player, String category) {
+        synchronized (lock) {
+            String path = categoryProgressPath(player, category);
+            return new CategoryProgress(data.getLong(path + ".amount"), Set.copyOf(data.getStringList(path + ".claimed")));
+        }
+    }
+
+    public void saveCategoryProgress(UUID player, String category, CategoryProgress progress) {
+        synchronized (lock) {
+            String path = categoryProgressPath(player, category);
+            data.set(path + ".amount", progress.amount());
+            data.set(path + ".claimed", new ArrayList<>(progress.claimed()));
+            isDirty = true;
+        }
+    }
+
+    private String categoryProgressPath(UUID player, String category) {
+        String key = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(category.toLowerCase(Locale.ROOT).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return "category-progress." + player + "." + key;
+    }
+
+    public record CategoryProgress(long amount, Set<String> claimed) {}
     public record PlayerStats(UUID uuid, String name, int totalDeliveries) {}
 }

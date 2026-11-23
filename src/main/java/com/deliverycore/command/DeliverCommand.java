@@ -5,10 +5,7 @@ import com.deliverycore.gui.DeliveryGUI;
 import com.deliverycore.service.ActiveEvent;
 import com.deliverycore.service.DeliveryService;
 import org.bukkit.Bukkit;
-import org.bukkit.Material;
-import org.bukkit.Sound;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.ItemStack;
 
 import java.util.*;
 import java.util.function.BiConsumer;
@@ -26,6 +23,16 @@ public class DeliverCommand {
     private final Logger logger;
     private final DeliveryGUI deliveryGUI;
     private DeliveryService deliveryService;
+    private InventorySubmission inventorySubmission;
+
+    public void setInventorySubmission(InventorySubmission inventorySubmission) {
+        this.inventorySubmission = inventorySubmission;
+    }
+
+    @FunctionalInterface
+    public interface InventorySubmission {
+        void submit(Player player, ActiveEvent event, int limit);
+    }
 
     private static final String PREFIX = "&e&lD&6elivery&e&lC&6ore &8» &r";
 
@@ -109,68 +116,8 @@ public class DeliverCommand {
             }
         }
 
-        deliverFromInventory(player, senderUuid, targetEvent, maxAmount);
+        inventorySubmission.submit(player, targetEvent, maxAmount > 0 ? maxAmount : Integer.MAX_VALUE);
         return true;
-    }
-
-    private void deliverFromInventory(Player player, UUID playerUuid, ActiveEvent event, int maxAmount) {
-        String requiredItem = event.getResolvedItem();
-        Material material;
-        
-        try {
-            material = Material.valueOf(requiredItem.toUpperCase());
-        } catch (Exception e) {
-            prefix(player.getName(), "&cGeçersiz eşya: &f" + requiredItem);
-            return;
-        }
-        
-        // Envanterdeki eşyaları say
-        int totalInInventory = 0;
-        for (ItemStack item : player.getInventory().getContents()) {
-            if (item != null && item.getType() == material) {
-                totalInInventory += item.getAmount();
-            }
-        }
-        
-        if (totalInInventory == 0) {
-            String itemName = deliveryGUI.getItemDisplayName(requiredItem);
-            prefix(player.getName(), "&cEnvanterinde &e" + itemName + " &cyok!");
-            return;
-        }
-        
-        // Teslim edilecek miktar
-        int toDeliver = (maxAmount <= 0 || maxAmount > totalInInventory) ? totalInInventory : maxAmount;
-        
-        // Envanterdeki eşyaları kaldır
-        int remaining = toDeliver;
-        ItemStack[] contents = player.getInventory().getContents();
-        for (int i = 0; i < contents.length && remaining > 0; i++) {
-            ItemStack item = contents[i];
-            if (item != null && item.getType() == material) {
-                int itemAmount = item.getAmount();
-                if (itemAmount <= remaining) {
-                    remaining -= itemAmount;
-                    player.getInventory().setItem(i, null);
-                } else {
-                    item.setAmount(itemAmount - remaining);
-                    remaining = 0;
-                }
-            }
-        }
-        
-        int delivered = toDeliver - remaining;
-        deliveryService.recordDelivery(playerUuid, event.getDeliveryName(), delivered);
-        
-        int total = event.getPlayerDeliveries().getOrDefault(playerUuid, 0);
-        int rank = calculateRank(event, playerUuid);
-        String itemName = deliveryGUI.getItemDisplayName(requiredItem);
-        
-        // Title göster
-        player.sendTitle("§a§lTESLİM EDİLDİ!", "§e" + delivered + " §7adet §f" + itemName, 10, 50, 10);
-        prefix(player.getName(), "&a" + delivered + " &7adet &e" + itemName + " &7teslim edildi!");
-        prefix(player.getName(), "&7Toplam: &f" + total + " &8| &7Sıra: &e#" + rank);
-        
-        try { player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f); } catch (Exception ignored) {}
     }
 
     private void showActiveDeliveries(String sender) {

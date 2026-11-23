@@ -81,6 +81,7 @@ public class DeliveryConfigImpl implements DeliveryConfig {
         boolean visibleBeforeStart = getBoolean(data, "visible-before-start", false);
         SelectionConfig category = parseSelectionConfig(data, "category");
         SelectionConfig item = parseSelectionConfig(data, "item");
+        List<String> acceptedItems = parseAcceptedItems(data);
         ZoneId timezone = ZoneId.of(getString(data, "timezone", "UTC"));
         ScheduleConfig schedule = parseScheduleConfig((Map<String, Object>) data.get("schedule"));
         int winnerCount = getInt(data, "winners", 1);
@@ -88,7 +89,25 @@ public class DeliveryConfigImpl implements DeliveryConfig {
         WebhookConfig webhook = parseWebhookConfig((Map<String, Object>) data.get("webhook"));
         
         return new DeliveryDefinition(name, enabled, visibleBeforeStart, category, item, timezone, 
-                                       schedule, winnerCount, reward, webhook);
+                                       schedule, winnerCount, reward, webhook, acceptedItems);
+    }
+
+    private List<String> parseAcceptedItems(Map<String, Object> data) {
+        if (!data.containsKey("accepted-items")) {
+            return List.of();
+        }
+        Object value = data.get("accepted-items");
+        if (!(value instanceof List<?> items) || items.isEmpty()) {
+            throw new IllegalArgumentException("accepted-items must be a non-empty list of item IDs");
+        }
+        Set<String> ids = new LinkedHashSet<>();
+        for (Object entry : items) {
+            if (!(entry instanceof String id) || !ItemValidator.isValidItemName(id)) {
+                throw new IllegalArgumentException("Invalid item ID in accepted-items: " + entry);
+            }
+            ids.add(id);
+        }
+        return List.copyOf(ids);
     }
 
     @SuppressWarnings("unchecked")
@@ -98,6 +117,9 @@ public class DeliveryConfigImpl implements DeliveryConfig {
             Map<String, Object> selectionData = (Map<String, Object>) value;
             String mode = getString(selectionData, "mode", "random");
             String val = getString(selectionData, "value", null);
+            if ("item".equals(key) && "all".equalsIgnoreCase(mode)) {
+                return new SelectionConfig(SelectionMode.ALL, null);
+            }
             return new SelectionConfig(
                 "fixed".equalsIgnoreCase(mode) ? SelectionMode.FIXED : SelectionMode.RANDOM,
                 val
@@ -114,7 +136,8 @@ public class DeliveryConfigImpl implements DeliveryConfig {
         }
         return new ScheduleConfig(
             getString(data, "start", ""),
-            getString(data, "end", "")
+            getString(data, "end", ""),
+            getString(data, "repeat", "")
         );
     }
     
@@ -237,6 +260,9 @@ public class DeliveryConfigImpl implements DeliveryConfig {
         data.put("visible-before-start", def.visibleBeforeStart());
         data.put("category", serializeSelection(def.category()));
         data.put("item", serializeSelection(def.item()));
+        if (!def.acceptedItems().isEmpty()) {
+            data.put("accepted-items", def.acceptedItems());
+        }
         data.put("timezone", def.timezone().getId());
         data.put("schedule", serializeSchedule(def.schedule()));
         data.put("winners", def.winnerCount());
@@ -258,6 +284,9 @@ public class DeliveryConfigImpl implements DeliveryConfig {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("start", config.start());
         data.put("end", config.end());
+        if (!config.repeat().isBlank()) {
+            data.put("repeat", config.repeat());
+        }
         return data;
     }
     

@@ -1,6 +1,7 @@
 package com.deliverycore.model;
 
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -16,6 +17,7 @@ import java.util.Objects;
  * @param winnerCount        the number of winners to select
  * @param reward             the reward configuration
  * @param webhook            the webhook configuration
+ * @param acceptedItems      an explicit list of accepted items, if configured
  */
 public record DeliveryDefinition(
     String name,
@@ -27,8 +29,16 @@ public record DeliveryDefinition(
     ScheduleConfig schedule,
     int winnerCount,
     RewardConfig reward,
-    WebhookConfig webhook
+    WebhookConfig webhook,
+    List<String> acceptedItems
 ) {
+    public DeliveryDefinition(String name, boolean enabled, boolean visibleBeforeStart,
+            SelectionConfig category, SelectionConfig item, ZoneId timezone, ScheduleConfig schedule,
+            int winnerCount, RewardConfig reward, WebhookConfig webhook) {
+        this(name, enabled, visibleBeforeStart, category, item, timezone, schedule, winnerCount,
+            reward, webhook, List.of());
+    }
+
     /**
      * Creates a new DeliveryDefinition with validation.
      *
@@ -42,6 +52,7 @@ public record DeliveryDefinition(
      * @param winnerCount        the winner count
      * @param reward             the reward config
      * @param webhook            the webhook config
+     * @param acceptedItems      the explicit accepted item IDs
      * @throws NullPointerException     if required fields are null
      * @throws IllegalArgumentException if winnerCount is less than 1
      */
@@ -53,6 +64,7 @@ public record DeliveryDefinition(
         Objects.requireNonNull(schedule, "Schedule cannot be null");
         Objects.requireNonNull(reward, "Reward config cannot be null");
         Objects.requireNonNull(webhook, "Webhook config cannot be null");
+        acceptedItems = List.copyOf(acceptedItems);
         
         if (winnerCount < 1) {
             throw new IllegalArgumentException("Winner count must be at least 1");
