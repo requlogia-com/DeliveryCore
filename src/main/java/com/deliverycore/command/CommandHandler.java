@@ -196,6 +196,12 @@ public class CommandHandler {
     // ═══════════════════════════════════════════════════════════════
     // RELOAD KOMUTU
     // ═══════════════════════════════════════════════════════════════
+    private java.util.function.Supplier<String> languageSupplier = () -> "tr";
+
+    public void setLanguageSupplier(java.util.function.Supplier<String> supplier) {
+        this.languageSupplier = supplier;
+    }
+
     private boolean handleReload(String sender) {
         if (!hasPerm(sender, PERM_ADMIN_RELOAD)) {
             noPermission(sender);
@@ -221,7 +227,8 @@ public class CommandHandler {
                 msg(sender, "&e⚠ " + result.errors().size() + " uyarı ile yüklendi");
                 logErrors(result.errors());
             } else {
-                msg(sender, "&a✓ Konfigürasyon başarıyla yüklendi!");
+                msg(sender, configManager.getLanguageConfig().format("command.reload.success", languageSupplier.get(),
+                    "&a✓ Konfigürasyon başarıyla yüklendi!", Map.of()));
             }
         } else {
             msg(sender, "&c✗ Yükleme başarısız! Önceki ayarlar aktif.");

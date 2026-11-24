@@ -13,6 +13,18 @@ import java.util.*;
  * Supports Turkish (tr) and English (en) with Turkish as fallback.
  */
 public class LanguageConfigImpl implements LanguageConfig {
+    private static final Map<String, String> LEGACY_KEYS = Map.ofEntries(
+        Map.entry("general.prefix", "messages.prefix"),
+        Map.entry("general.no_permission", "messages.no-perm"),
+        Map.entry("general.unknown_command", "messages.unknown-command"),
+        Map.entry("command.reload.success", "messages.config-reloaded"),
+        Map.entry("delivery.success.message", "messages.delivered-message"),
+        Map.entry("delivery.inventory.empty", "messages.nothing-to-deliver"),
+        Map.entry("command.status.not_found", "messages.wrong-delivery-category"),
+        Map.entry("gui.main.title", "gui.main-gui-name"),
+        Map.entry("gui.delivery.title", "gui.delivery-gui-name"),
+        Map.entry("gui.leaderboard.title", "gui.top-ten-gui-name")
+    );
     
     private final Map<String, Map<String, String>> languages;
     
@@ -78,6 +90,8 @@ public class LanguageConfigImpl implements LanguageConfig {
             
             if (value instanceof Map) {
                 result.putAll(flattenMessages((Map<String, Object>) value, key));
+            } else if (value instanceof List<?> lines) {
+                result.put(key, String.join("\n", lines.stream().map(Objects::toString).toList()));
             } else if (value != null) {
                 result.put(key, value.toString());
             }
@@ -89,7 +103,10 @@ public class LanguageConfigImpl implements LanguageConfig {
     public Optional<String> getMessage(String key, String locale) {
         Map<String, String> messages = languages.get(locale);
         if (messages != null) {
-            return Optional.ofNullable(messages.get(key));
+            String message = messages.get(key);
+            String legacy = LEGACY_KEYS.get(key);
+            if (message == null && legacy != null) message = messages.get(legacy);
+            return Optional.ofNullable(message);
         }
         return Optional.empty();
     }

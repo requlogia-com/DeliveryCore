@@ -36,6 +36,19 @@ public interface LanguageConfig {
      * @return the message, or the key itself if not found in any locale
      */
     String getMessageWithFallback(String key, String locale);
+
+    default String format(String key, String locale, String fallback, Map<String, String> values) {
+        String message = getMessage(key, locale)
+            .or(() -> getMessage(key, DEFAULT_LOCALE))
+            .orElse(fallback);
+        String prefix = getMessage("general.prefix", locale)
+            .or(() -> getMessage("general.prefix", DEFAULT_LOCALE)).orElse("");
+        message = message.replace("{prefix}", prefix);
+        for (var value : values.entrySet()) {
+            message = message.replace("{" + value.getKey() + "}", value.getValue());
+        }
+        return org.bukkit.ChatColor.translateAlternateColorCodes('&', message);
+    }
     
     /**
      * Gets all messages for a specific locale.

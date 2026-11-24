@@ -24,6 +24,11 @@ public class DeliverCommand {
     private final DeliveryGUI deliveryGUI;
     private DeliveryService deliveryService;
     private InventorySubmission inventorySubmission;
+    private java.util.function.Supplier<String> languageSupplier = () -> "tr";
+
+    public void setLanguageSupplier(java.util.function.Supplier<String> supplier) {
+        this.languageSupplier = supplier;
+    }
 
     public void setInventorySubmission(InventorySubmission inventorySubmission) {
         this.inventorySubmission = inventorySubmission;
@@ -65,7 +70,12 @@ public class DeliverCommand {
             case "help", "yardim", "?" -> { sendPlayerHelp(sender); yield true; }
             case "top", "siralama" -> { showLeaderboard(sender, senderUuid); yield true; }
             case "bilgi", "info" -> { showActiveInfo(sender); yield true; }
-            default -> { prefix(sender, "&cBilinmeyen komut: &f" + sub); yield true; }
+            case "teslim", "deliver" -> handleTeslimCommand(sender, senderUuid, Arrays.copyOfRange(args, 1, args.length));
+            default -> {
+                localized(sender, "general.unknown_command", PREFIX + "&cBilinmeyen komut: &f{command}",
+                    Map.of("command", sub));
+                yield true;
+            }
         };
     }
 
@@ -96,7 +106,8 @@ public class DeliverCommand {
                 .orElse(null);
             
             if (targetEvent == null) {
-            prefix(sender, "&cAktif teslimat bulunamadı: &f" + deliveryName);
+                localized(sender, "command.status.not_found", PREFIX + "&cAktif teslimat bulunamadı: &f{name}",
+                    Map.of("name", deliveryName));
                 showActiveDeliveries(sender);
                 return true;
             }
@@ -133,7 +144,10 @@ public class DeliverCommand {
     }
 
     public List<String> handleTeslimatTabComplete(String sender, String[] args) {
-        if (args.length == 1) return filter(Arrays.asList("help", "top", "bilgi"), args[0]);
+        if (args.length == 1) return filter(Arrays.asList("help", "top", "bilgi", "teslim", "deliver"), args[0]);
+        if (args.length > 1 && (args[0].equalsIgnoreCase("teslim") || args[0].equalsIgnoreCase("deliver"))) {
+            return handleTeslimTabComplete(sender, Arrays.copyOfRange(args, 1, args.length));
+        }
         return List.of();
     }
     
@@ -155,6 +169,11 @@ public class DeliverCommand {
     }
 
     private void sendPlayerHelp(String sender) {
+        var configured = configManager.getLanguageConfig().getMessage("messages.help", languageSupplier.get());
+        if (configured.isPresent()) {
+            for (String line : configured.get().split("\\R", -1)) msg(sender, line);
+            return;
+        }
         msg(sender, "");
         msg(sender, "&e&lD&6elivery&e&lC&6ore &8| &fOyuncu Rehberi");
         msg(sender, "");
@@ -223,7 +242,13 @@ public class DeliverCommand {
     
     private void prefix(String sender, String message) { msg(sender, PREFIX + message); }
     private boolean hasPerm(String sender, String permission) { return permissionChecker.apply(sender, permission); }
-    private void noPermission(String sender) { prefix(sender, "&cBu işlem için yetkiniz yok."); }
+    private void noPermission(String sender) {
+        localized(sender, "general.no_permission", PREFIX + "&cBu işlem için yetkiniz yok.", Map.of());
+    }
+
+    private void localized(String sender, String key, String fallback, Map<String, String> values) {
+        msg(sender, configManager.getLanguageConfig().format(key, languageSupplier.get(), fallback, values));
+    }
     private void msg(String sender, String message) { messageSender.accept(sender, message.replace("&", "\u00A7")); }
     private List<String> filter(List<String> list, String prefix) {
         String p = prefix.toLowerCase();

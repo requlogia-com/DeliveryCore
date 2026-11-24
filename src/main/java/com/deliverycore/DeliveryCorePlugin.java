@@ -48,6 +48,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -443,7 +444,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
             File configFile = new File(getDataFolder(), "config.yml");
             if (configFile.exists()) {
                 var config = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(configFile);
-                String lang = config.getString("general.language", "tr");
+                String lang = config.getString("general.language", config.getString("settings.lang", "tr"));
                 currentLanguage = lang.toLowerCase().trim();
                 if (!currentLanguage.equals("tr") && !currentLanguage.equals("en")) {
                     currentLanguage = "tr";
@@ -488,7 +489,6 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
 
         deliveryGUI = new DeliveryGUI(configManager, deliveryService);
         deliveryGUI.setLanguageSupplier(this::getCurrentLanguage);
-        deliveryGUI.setDataFolder(getDataFolder());
         deliveryGUI.setMilestones(categoryMilestones);
         deliveryGUI.setInventoryAction(this::deliverFromInventory);
         deliveryGUI.setItemRegistry(itemRegistry);
@@ -503,10 +503,12 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         );
 
         commandHandler.setDeliveryService(deliveryService);
+        commandHandler.setLanguageSupplier(this::getCurrentLanguage);
         commandHandler.setReloadCallback(this::reloadAllSettings);
         commandHandler.setManualEndScheduler(this::scheduleManualEnd);
         commandHandler.setWebhookTester(this::testWebhook);
         deliverCommand.setDeliveryService(deliveryService);
+        deliverCommand.setLanguageSupplier(this::getCurrentLanguage);
         deliverCommand.setInventorySubmission((player, event, count) ->
                 submitInventory(player, player.getInventory(), event, count));
     }
@@ -589,9 +591,6 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
 
         // items.yml'yi yeniden yükle
         deliveryGUI.loadItemsConfig(getDataFolder());
-
-        // GUI dil dosyasını yeniden yükle
-        deliveryGUI.reloadLanguage();
 
         // GUI ayarlarını yeniden yükle
         loadGUISettings();
@@ -878,8 +877,11 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         int delivered = InventoryDelivery.submit(player, inventory, event, limit, itemRegistry,
                 (DeliveryServiceImpl) deliveryService);
         if (delivered < 0) return;
+        var language = configManager.getLanguageConfig();
+        String item = deliveryGUI.getAcceptedItemDisplay(event);
         if (delivered == 0) {
-            player.sendMessage("§cTeslim edilecek uygun eşya bulunamadı.");
+            player.sendMessage(language.format("delivery.inventory.empty", currentLanguage,
+                "&cTeslim edilecek uygun eşya bulunamadı.", Map.of("item", item)));
             return;
         }
         dataManager.saveActiveEvent(event);
@@ -889,8 +891,14 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
 
         int total = event.getPlayerDeliveryCount(player.getUniqueId());
         int rank = calculateRank(event, player.getUniqueId());
-        player.sendTitle("§a§lTESLİM EDİLDİ!", "§e" + delivered + " §7adet", 10, 50, 10);
-        player.sendMessage("§a" + delivered + " §7adet teslim edildi. Toplam: §f" + total + " §8| §7Sıra: §e#" + rank);
+        Map<String, String> values = Map.of("amount", Integer.toString(delivered), "item", item,
+            "category", deliveryGUI.getCategoryDisplayName(event.getResolvedCategory()),
+            "total", Integer.toString(total), "rank", Integer.toString(rank));
+        player.sendTitle(language.format("delivery.success.title", currentLanguage, "&a&lTESLİM EDİLDİ!", values),
+            language.format("delivery.success.subtitle", currentLanguage, "&e{amount} &7adet", values), 10, 50, 10);
+        player.sendMessage(language.format("delivery.success.message", currentLanguage,
+            "&a{amount} &7adet teslim edildi.", values) + " " + language.format("delivery.success.stats",
+            currentLanguage, "&7Toplam: &f{total} &8| &7Sıra: &e#{rank}", values));
         player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
     }
 
@@ -986,6 +994,9 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         return switch (cmdName) {
             case "deliverycore" -> commandHandler.handleCommand(senderName, args);
             case "teslimat", "delivery" -> {
+                if (args.length > 0 && args[0].equalsIgnoreCase("reload")) {
+                    yield commandHandler.handleCommand(senderName, args);
+                }
                 if (args.length > 0 && handleDeliveryAdmin(sender, args)) yield true;
                 if (!(sender instanceof Player)) {
                     sender.sendMessage("§cBu komut sadece oyuncular kullanabilir.");
@@ -1013,7 +1024,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
             case "deliverycore" -> commandHandler.handleTabComplete(senderName, args);
             case "teslimat", "delivery" -> {
                 if (sender.hasPermission("deliverycore.admin") && args.length == 1) {
-                    yield java.util.stream.Stream.of("help", "info", "top", "set", "reset", "customitem", "removecustomitem")
+                    yield java.util.stream.Stream.of("help", "info", "top", "teslim", "deliver", "reload", "set", "reset", "customitem", "removecustomitem")
                             .filter(value -> value.startsWith(args[0].toLowerCase(java.util.Locale.ROOT))).toList();
                 }
                 yield deliverCommand.handleTeslimatTabComplete(senderName, args);
