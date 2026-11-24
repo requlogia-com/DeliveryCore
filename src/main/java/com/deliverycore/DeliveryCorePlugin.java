@@ -42,11 +42,15 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.Event;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.block.Chest;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
@@ -771,32 +775,23 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
     }
 
     // Sandık tıklama event'i
-    @EventHandler
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerInteract(PlayerInteractEvent event) {
+        if (event.getHand() != EquipmentSlot.HAND || event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
         Player player = event.getPlayer();
 
         if (!deliveryGUI.isInChestSelectionMode(player.getUniqueId())) return;
 
-        if (event.getAction() != org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) return;
-        if (event.getClickedBlock() == null) return;
-
-        // Koruma kontrolü - oyuncunun bu bloğa erişim hakkı var mı?
-        // Bu, claim/ada pluginleri ile uyumlu çalışır (WorldGuard, GriefPrevention, ASkyBlock vb.)
         org.bukkit.block.Block block = event.getClickedBlock();
-        if (!canAccessChest(player, block)) {
-            player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §cBu sandığa erişim izniniz yok!");
-            deliveryGUI.cancelChestSelection(player.getUniqueId());
-            return;
-        }
+        if (block == null) return;
 
         // Sandık kontrolü - normal ve çift sandık
-        org.bukkit.block.BlockState state = event.getClickedBlock().getState();
+        org.bukkit.block.BlockState state = block.getState();
         org.bukkit.inventory.Inventory chestInventory = null;
 
         if (state instanceof Chest chest) {
             chestInventory = chest.getInventory();
-        } else if (event.getClickedBlock().getType() == org.bukkit.Material.CHEST ||
-                   event.getClickedBlock().getType() == org.bukkit.Material.TRAPPED_CHEST) {
+        } else if (block.getType() == org.bukkit.Material.CHEST || block.getType() == org.bukkit.Material.TRAPPED_CHEST) {
             // Blok tipi sandık ama state farklı olabilir
             if (state instanceof org.bukkit.block.Container container) {
                 chestInventory = container.getInventory();
@@ -804,7 +799,17 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         }
 
         if (chestInventory == null) {
-            player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §cBu bir sandık değil!");
+            if (deliveryGUI.markInvalidChestSelectionWarned(player.getUniqueId())) {
+                player.sendMessage(configManager.getLanguageConfig().format("delivery.chest.not_chest", currentLanguage,
+                    "&cBu bir sandık değil!", Map.of()));
+            }
+            return;
+        }
+
+        if (!player.hasPermission("deliverycore.bypass.protection")
+                && (event.useInteractedBlock() == Event.Result.DENY || hasSignLock(block, player))) {
+            player.sendMessage("§e§lD§6elivery§e§lC§6ore §8» §cBu sandığa erişim izniniz yok!");
+            deliveryGUI.cancelChestSelection(player.getUniqueId());
             return;
         }
 
@@ -820,49 +825,6 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         }
 
         deliverFromRealChestInventory(player, chestInventory, activeEvent);
-    }
-
-    /**
-     * Oyuncunun sandığa erişim hakkı olup olmadığını kontrol eder.
-     * - Tabela kilidi kontrolü (LWC, Lockette, BlockLocker vb.)
-     * - Claim/ada koruma kontrolü (WorldGuard, GriefPrevention, ASkyBlock vb.)
-     */
-    private boolean canAccessChest(Player player, org.bukkit.block.Block block) {
-        // Admin bypass
-        if (player.hasPermission("deliverycore.bypass.protection")) {
-            return true;
-        }
-
-        // Tabela kilidi kontrolü - sandığın yanındaki tabelaları kontrol et
-        if (hasSignLock(block, player)) {
-            return false;
-        }
-
-        // PlayerInteractEvent ile koruma kontrolü
-        // Bu, WorldGuard, GriefPrevention, ASkyBlock gibi pluginler tarafından dinlenir
-        try {
-            org.bukkit.event.player.PlayerInteractEvent testEvent =
-                new org.bukkit.event.player.PlayerInteractEvent(
-                    player,
-                    org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK,
-                    player.getInventory().getItemInMainHand(),
-                    block,
-                    org.bukkit.block.BlockFace.NORTH
-                );
-
-            // Event'i çağır ve iptal edilip edilmediğini kontrol et
-            Bukkit.getPluginManager().callEvent(testEvent);
-
-            // Eğer başka bir plugin event'i iptal ettiyse, erişim yok
-            if (testEvent.isCancelled()) {
-                return false;
-            }
-        } catch (Exception e) {
-            // Hata durumunda izin ver
-            getLogger().warning("Koruma kontrolü hatası: " + e.getMessage());
-        }
-
-        return true;
     }
 
     /**

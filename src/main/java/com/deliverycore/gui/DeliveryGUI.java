@@ -39,6 +39,7 @@ public class DeliveryGUI {
     private final Map<String, String> categoryHeads = new ConcurrentHashMap<>();
     private final Map<UUID, String> chestSelectionMode = new ConcurrentHashMap<>();
     private final Map<UUID, Long> chestSelectionTimeout = new ConcurrentHashMap<>();
+    private final Set<UUID> invalidChestSelectionWarned = ConcurrentHashMap.newKeySet();
     private final Map<UUID, String> playerNameCache = new ConcurrentHashMap<>();
     
     // Dil desteği
@@ -246,6 +247,7 @@ public class DeliveryGUI {
     public void cachePlayerName(UUID id, String name) { if (id != null && name != null) playerNameCache.put(id, name); }
 
     public void startChestSelection(Player player, String deliveryName) {
+        invalidChestSelectionWarned.remove(player.getUniqueId());
         chestSelectionMode.put(player.getUniqueId(), deliveryName);
         chestSelectionTimeout.put(player.getUniqueId(), System.currentTimeMillis() + 10000);
     }
@@ -256,7 +258,12 @@ public class DeliveryGUI {
         return chestSelectionMode.containsKey(id);
     }
     public String getChestSelectionDelivery(UUID id) { return chestSelectionMode.get(id); }
-    public void cancelChestSelection(UUID id) { chestSelectionMode.remove(id); chestSelectionTimeout.remove(id); }
+    public boolean markInvalidChestSelectionWarned(UUID id) { return invalidChestSelectionWarned.add(id); }
+    public void cancelChestSelection(UUID id) {
+        chestSelectionMode.remove(id);
+        chestSelectionTimeout.remove(id);
+        invalidChestSelectionWarned.remove(id);
+    }
 
     public static boolean isDeliveryGUI(String title) { 
         return title.contains(MAIN_TITLE_TR) || title.contains(MAIN_TITLE_EN) || 
