@@ -16,6 +16,10 @@ description: |
  Sunucu sahipleri için kapsamlı teslimat sistemi.
  1.16.5+ tüm versiyonlarla uyumlu.
 website: https://modrinth.com/plugin/delicerycore
+libraries:
+  - org.yaml:snakeyaml:${snakeyaml.version}
+  - org.xerial:sqlite-jdbc:${sqlite-jdbc.version}
+  - com.mysql:mysql-connector-j:${mysql-connector-j.version}
 softdepend:
   - PlaceholderAPI
   - ItemsAdder

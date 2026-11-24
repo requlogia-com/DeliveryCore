@@ -2,7 +2,9 @@ package com.deliverycore.config;
 
 import com.deliverycore.model.*;
 import org.yaml.snakeyaml.DumperOptions;
+import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 import java.io.*;
 import java.time.ZoneId;
@@ -50,7 +52,7 @@ public class DeliveryConfigImpl implements DeliveryConfig {
 
     @SuppressWarnings("unchecked")
     private Map<String, DeliveryDefinition> parseDeliveries(InputStream inputStream) {
-        Yaml yaml = new Yaml();
+        Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
         Map<String, Object> root = yaml.load(inputStream);
         
         if (root == null) {

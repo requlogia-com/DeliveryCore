@@ -1,7 +1,9 @@
 package com.deliverycore.config;
 
 import org.yaml.snakeyaml.DumperOptions;
+import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 import java.io.*;
 import java.util.*;
@@ -57,7 +59,7 @@ public class LanguageConfigImpl implements LanguageConfig {
      * @param locale      the locale identifier
      */
     public void loadFromStream(InputStream inputStream, String locale) {
-        Yaml yaml = new Yaml();
+        Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
         Map<String, Object> root = yaml.load(inputStream);
         Map<String, String> messages = flattenMessages(root, "");
         languages.put(locale, Collections.unmodifiableMap(messages));

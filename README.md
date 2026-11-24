@@ -131,6 +131,8 @@ Transform your server with engaging delivery events! Players collect and deliver
 4. Edit configurations in `plugins/DeliveryCore/`
 5. Use `/dc reload` to apply changes
 
+The server downloads the runtime libraries on first startup. Use a Paper or Spigot build with `plugin.yml` library loading support and allow access to its Maven repository for the initial download.
+
 ## Requirements
 
 - **Minecraft:** 1.16.5 - 1.20.4
