@@ -33,6 +33,7 @@ import com.deliverycore.util.LoggingService;
 import com.deliverycore.webhook.WebhookService;
 import com.deliverycore.webhook.WebhookServiceImpl;
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.Sound;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -49,6 +50,8 @@ import org.bukkit.block.Chest;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -67,7 +70,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
     private SchedulerService schedulerService;
     private DeliveryService deliveryService;
     private RewardService rewardService;
-    private WebhookService webhookService;
+    private WebhookServiceImpl webhookService;
     private MessageService messageService;
     private PendingRewardStore pendingRewardStore;
     private CommandHandler commandHandler;
@@ -233,6 +236,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         if (deliveryService.getActiveEvent(event.getDeliveryName()).orElse(null) == event.getActiveEvent()) {
             dataManager.saveActiveEvent(event.getActiveEvent());
             scheduleExpiry(event.getActiveEvent());
+            notifyImportedWebhook(event.getActiveEvent(), true);
         }
     }
 
@@ -242,6 +246,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
             var task = expiryTasks.remove(event.getDeliveryName());
             if (task != null) task.cancel();
             dataManager.removeActiveEvent(event.getDeliveryName());
+            notifyImportedWebhook(event.getActiveEvent(), false);
             ImportedDeliveryRewards.distribute(configManager.getDeliveryConfig(), event, rewardService);
         }
     }
@@ -287,7 +292,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
 
     private void sendWebhookWithWinners(String deliveryName, String itemTR, String categoryTR,
                                          java.util.List<com.deliverycore.model.Winner> winners) {
-        if (!allowsDeliveryWebhooks(deliveryName)) return;
+        if (isImportedDelivery(deliveryName)) return;
         try {
             File configFile = new File(getDataFolder(), "config.yml");
             if (!configFile.exists()) return;
@@ -334,7 +339,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
      * Etkinlik başlangıcı için webhook gönderir
      */
     private void sendWebhook(String deliveryName, String type, String itemTR, String categoryTR) {
-        if (!allowsDeliveryWebhooks(deliveryName)) return;
+        if (isImportedDelivery(deliveryName)) return;
         try {
             // Global webhook URL'yi al
             File configFile = new File(getDataFolder(), "config.yml");
@@ -363,9 +368,21 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         }
     }
 
-    private boolean allowsDeliveryWebhooks(String deliveryName) {
-        var delivery = configManager.getDeliveryConfig().getImportedDeliveries().get(deliveryName);
-        return delivery == null || delivery.sendWebhooks();
+    private boolean isImportedDelivery(String deliveryName) {
+        return configManager.getDeliveryConfig().getImportedDeliveries().containsKey(deliveryName);
+    }
+
+    private void notifyImportedWebhook(ActiveEvent event, boolean start) {
+        var imported = configManager.getDeliveryConfig().getImportedDeliveries().get(event.getDeliveryName());
+        if (imported == null || !imported.sendWebhooks()) return;
+        if (!getConfig().getBoolean(start ? "settings.start-webhook" : "settings.end-webhook")) return;
+        String category = ChatColor.stripColor(deliveryGUI.getCategoryDisplayName(event.getResolvedCategory()));
+        Duration remaining = start ? Duration.between(Instant.now(), event.getEndTime().toInstant()) : Duration.ZERO;
+        String time = ChatColor.stripColor(deliveryGUI.formatRemaining(remaining));
+        var file = getDataFolder().toPath().resolve("webhooks.yml");
+        webhookService.sendImportedNotification(file, start, category, time).thenAccept(result -> {
+            if (!result.success()) getLogger().warning("Delivery webhook: " + result.message());
+        });
     }
 
     /**

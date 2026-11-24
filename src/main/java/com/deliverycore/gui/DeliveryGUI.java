@@ -467,7 +467,7 @@ public class DeliveryGUI {
         return getLang("system.ended-placeholder", "&c" + ("en".equals(getCurrentLanguage()) ? "Ended" : "Bitti"));
     }
 
-    private String formatRemaining(Duration remaining) {
+    public String formatRemaining(Duration remaining) {
         boolean english = "en".equals(getCurrentLanguage());
         String[] units = getLang("system.time-placeholders", english ? "d-h-m" : "g-s-dk").split("-", -1);
         if (units.length != 3) units = new String[] {"d", "h", "m"};

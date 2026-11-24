@@ -4,17 +4,20 @@ import com.deliverycore.model.EmbedConfig;
 import com.deliverycore.model.PlaceholderContext;
 import com.deliverycore.model.Winner;
 import com.deliverycore.placeholder.PlaceholderEngine;
+import org.yaml.snakeyaml.error.YAMLException;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 /**
  * Implementation of WebhookService for Discord webhook integration.
@@ -248,10 +251,23 @@ public class WebhookServiceImpl implements WebhookService {
                 WebhookResult.failure(0, "Webhook URL is empty or null")
             );
         }
-        
+        return sendPayload(url, buildJsonPayload(embed, mentionEveryone));
+    }
+
+    public CompletableFuture<WebhookResult> sendImportedNotification(
+            Path file, boolean start, String category, String remaining) {
         try {
-            String jsonPayload = buildJsonPayload(embed, mentionEveryone);
-            
+            return ImportedWebhook.load(file, start)
+                    .map(webhook -> sendPayload(webhook.url(), buildImportedPayload(webhook, category, remaining)))
+                    .orElseGet(() -> CompletableFuture.completedFuture(
+                            WebhookResult.failure(0, "Webhook URL is missing from webhooks.yml")));
+        } catch (IOException | YAMLException e) {
+            return CompletableFuture.completedFuture(WebhookResult.failure(0, "Could not load webhooks.yml"));
+        }
+    }
+
+    private CompletableFuture<WebhookResult> sendPayload(String url, String jsonPayload) {
+        try {
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(TIMEOUT)
@@ -259,25 +275,25 @@ public class WebhookServiceImpl implements WebhookService {
                 .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
                 .build();
             
-            return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+            return httpClient.sendAsync(request, HttpResponse.BodyHandlers.discarding())
                 .thenApply(response -> {
                     int statusCode = response.statusCode();
                     if (statusCode >= 200 && statusCode < 300) {
-                        LOGGER.info("Webhook sent successfully to " + url);
+                        LOGGER.info("Webhook sent successfully");
                         return WebhookResult.success(statusCode);
                     } else {
                         String errorMsg = "Webhook request failed with status " + statusCode;
-                        LOGGER.warning(errorMsg + ": " + response.body());
+                        LOGGER.warning(errorMsg);
                         return WebhookResult.failure(statusCode, errorMsg);
                     }
                 })
                 .exceptionally(ex -> {
-                    String errorMsg = "Webhook request failed: " + ex.getMessage();
-                    LOGGER.log(Level.WARNING, errorMsg, ex);
+                    String errorMsg = "Webhook connection failed";
+                    LOGGER.warning(errorMsg);
                     return WebhookResult.connectionError(errorMsg);
                 });
         } catch (IllegalArgumentException e) {
-            String errorMsg = "Invalid webhook URL: " + e.getMessage();
+            String errorMsg = "Invalid webhook URL";
             LOGGER.warning(errorMsg);
             return CompletableFuture.completedFuture(
                 WebhookResult.failure(0, errorMsg)
@@ -324,17 +340,50 @@ public class WebhookServiceImpl implements WebhookService {
     }
     
     String buildJsonPayload(WebhookEmbed embed, boolean mentionEveryone) {
-        StringBuilder json = new StringBuilder();
-        json.append("{");
-        
+        StringBuilder json = new StringBuilder("{");
         if (mentionEveryone) {
-            json.append("\"content\":\"@everyone\",");
+            appendPayloadField(json, "content", "@everyone");
         }
-        
+        return appendEmbed(json, embed, "");
+    }
+
+    private String buildImportedPayload(ImportedWebhook webhook, String category, String remaining) {
+        var message = webhook.renderContent(category, remaining);
+        StringBuilder json = new StringBuilder("{");
+        appendPayloadField(json, "content", message.text());
+        appendPayloadField(json, "username", webhook.render(webhook.username(), category, remaining));
+        appendPayloadField(json, "avatar_url", webhook.avatar());
+        json.append("\"allowed_mentions\":{\"parse\":[");
+        if (message.everyone()) {
+            json.append("\"everyone\"");
+        }
+        json.append("],\"users\":").append(jsonArray(message.users()))
+                .append(",\"roles\":").append(jsonArray(message.roles()))
+                .append("},");
+        var embed = new WebhookEmbed(webhook.render(webhook.title(), category, remaining),
+                webhook.render(webhook.description(), category, remaining), parseColor(webhook.colorCode()),
+                webhook.render(webhook.footer(), category, remaining), webhook.thumbnail(), "", "");
+        return appendEmbed(json, embed, webhook.embedUrl());
+    }
+
+    private void appendPayloadField(StringBuilder json, String field, String value) {
+        if (!value.isBlank()) {
+            json.append(escapeJsonString(field)).append(':').append(escapeJsonString(value)).append(',');
+        }
+    }
+
+    private String jsonArray(List<String> values) {
+        return values.stream().map(this::escapeJsonString).collect(Collectors.joining(",", "[", "]"));
+    }
+
+    private String appendEmbed(StringBuilder json, WebhookEmbed embed, String embedUrl) {
         json.append("\"embeds\":[{");
         json.append("\"title\":").append(escapeJsonString(embed.title())).append(",");
         json.append("\"description\":").append(escapeJsonString(embed.description())).append(",");
         json.append("\"color\":").append(embed.color());
+        if (!embedUrl.isBlank()) {
+            json.append(",\"url\":").append(escapeJsonString(embedUrl));
+        }
         
         // Footer
         if (!embed.footer().isEmpty()) {
