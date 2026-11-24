@@ -2,6 +2,7 @@ package com.deliverycore.gui;
 
 import org.bukkit.configuration.ConfigurationSection;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,7 +26,7 @@ record MenuLayout(int size, Map<String, Integer> slots, Map<String, List<Integer
 
     static MenuLayout from(ConfigurationSection config, String menu, MenuLayout defaults) {
         ConfigurationSection section = config.getConfigurationSection("menus." + menu);
-        if (section == null) return defaults;
+        if (section == null) return fromLegacy(config, menu, defaults);
         int size = section.getInt("size", defaults.size());
         if (size < 9 || size > 54 || size % 9 != 0) return defaults;
 
@@ -46,6 +47,52 @@ record MenuLayout(int size, Map<String, Integer> slots, Map<String, List<Integer
             groups.put(group.getKey(), List.copyOf(values));
         }
         return new MenuLayout(size, Map.copyOf(slots), Map.copyOf(groups));
+    }
+
+    private static MenuLayout fromLegacy(ConfigurationSection config, String menu, MenuLayout defaults) {
+        String key = menu.equals("leaderboard") ? "top-ten" : menu;
+        List<String> rows = config.getStringList("gui." + key + "-layout");
+        if (rows.isEmpty() || rows.size() > 6 || rows.stream().anyMatch(row -> row.length() != 9)) return defaults;
+
+        Map<Character, String> controls = switch (menu) {
+            case "main" -> Map.of('h', "help", 'p', "previous", 'n', "next");
+            case "delivery" -> Map.of('d', "inventory", 't', "leaderboard", 'p', "previous", 'n', "next");
+            default -> Map.of();
+        };
+        String groupName = switch (menu) {
+            case "main" -> "categories";
+            case "delivery" -> "milestones";
+            default -> "entries";
+        };
+        char groupMarker = menu.equals("leaderboard") ? 'p' : 'c';
+        String layout = String.join("", rows);
+        Map<String, Integer> slots = new LinkedHashMap<>();
+        List<Integer> group = new ArrayList<>();
+        List<Integer> free = new ArrayList<>();
+        for (int i = 0; i < layout.length(); i++) {
+            char marker = layout.charAt(i);
+            if (marker == ' ') free.add(i);
+            else if (marker == groupMarker) group.add(i);
+            else {
+                String control = controls.get(marker);
+                if (control == null || slots.putIfAbsent(control, i) != null) return defaults;
+            }
+        }
+        if (group.isEmpty()) return defaults;
+
+        // Preserve the existing actions by placing them in any available slots.
+        List<String> required = switch (menu) {
+            case "main" -> List.of("help", "leaderboard", "previous", "next");
+            case "delivery" -> List.of("inventory", "info", "chest", "back", "previous", "next");
+            default -> List.of("back");
+        };
+        for (String control : required) {
+            if (slots.containsKey(control)) continue;
+            if (free.isEmpty()) return defaults;
+            slots.put(control, free.remove(0));
+        }
+        if (menu.equals("leaderboard")) slots.put("empty", group.get(0));
+        return new MenuLayout(layout.length(), Map.copyOf(slots), Map.of(groupName, List.copyOf(group)));
     }
 
     private static boolean reserve(HashSet<Integer> occupied, int slot, int size) {

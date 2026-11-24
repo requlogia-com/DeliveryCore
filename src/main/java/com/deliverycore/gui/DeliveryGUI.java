@@ -11,6 +11,7 @@ import com.deliverycore.service.ActiveEvent;
 import com.deliverycore.service.DeliveryService;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
@@ -44,6 +45,7 @@ public class DeliveryGUI {
     private MenuLayout mainLayout = MenuLayout.main();
     private MenuLayout deliveryLayout = MenuLayout.delivery();
     private MenuLayout rankingLayout = MenuLayout.ranking();
+    private ConfigurationSection guiSettings;
 
     public void setMilestones(CategoryMilestones milestones) { this.milestones = milestones; }
     public void setItemRegistry(DeliveryItemRegistry itemRegistry) { this.itemRegistry = itemRegistry; }
@@ -53,6 +55,7 @@ public class DeliveryGUI {
         mainLayout = MenuLayout.from(config, "main", MenuLayout.main());
         deliveryLayout = MenuLayout.from(config, "delivery", MenuLayout.delivery());
         rankingLayout = MenuLayout.from(config, "leaderboard", MenuLayout.ranking());
+        guiSettings = config.getConfigurationSection("gui");
     }
 
     public String getAcceptedItemDisplay(ActiveEvent event) {
@@ -256,38 +259,40 @@ public class DeliveryGUI {
     // ═══════════════════════════════════════════════════════════════════════════
 
     public void openMainMenu(Player player) {
+        openMainMenu(player, 0);
+    }
+
+    private void openMainMenu(Player player, int page) {
         boolean isEnglish = "en".equals(getCurrentLanguage());
         Menu menu = new Menu(mainLayout.size(), getMainTitle());
         Inventory inv = menu.getInventory();
-        
-        ItemStack bg = createItem(Material.BLACK_STAINED_GLASS_PANE, " ");
-        for (int i = 0; i < inv.getSize(); i++) inv.setItem(i, bg);
+        fillBackground(inv);
 
-        // Aktif teslimatlar (slot 11-15 üst sıra)
         var events = deliveryService.getAllActiveEvents();
-        int[] activeSlots = mainLayout.group("active");
-        
-        for (int i = 0; i < events.size() && i < activeSlots.length; i++) {
-            ActiveEvent event = events.get(i);
-            inv.setItem(activeSlots[i], createDeliveryItem(player, event));
-            menu.onClick(activeSlots[i], viewer -> openDeliveryMenu(viewer, event));
-        }
-        
-        // Bekleyen teslimatlar (slot 29-33 alt sıra) - aktif olmayan ama enabled olanlar
-        var allDeliveries = configManager.getDeliveryConfig().getEnabledDeliveries();
-        int[] waitingSlots = mainLayout.group("waiting");
-        int waitingIndex = 0;
-        
-        for (var delivery : allDeliveries) {
-            boolean isActive = events.stream().anyMatch(e -> e.getDeliveryName().equals(delivery.name()));
-            if (isActive) continue;
-            
-            if (waitingIndex < waitingSlots.length) {
-                int slot = waitingSlots[waitingIndex];
-                inv.setItem(slot, createWaitingDeliveryItem(delivery));
-                menu.onClick(slot, viewer -> viewer.sendMessage(getLang("delivery.error.not_started",
-                    isEnglish ? "&7This delivery has not started." : "&7Bu teslimat henüz başlamadı.")));
-                waitingIndex++;
+        var waiting = configManager.getDeliveryConfig().getEnabledDeliveries().stream()
+            .filter(delivery -> events.stream().noneMatch(event -> event.getDeliveryName().equals(delivery.name())))
+            .toList();
+        if (mainLayout.groups().containsKey("categories")) {
+            int[] slots = mainLayout.group("categories");
+            int count = events.size() + waiting.size();
+            int start = Math.min(page, Math.max(0, (count - 1) / slots.length)) * slots.length;
+            for (int i = 0; i < slots.length && start + i < count; i++) {
+                int index = start + i;
+                if (index < events.size()) addActiveDelivery(menu, player, slots[i], events.get(index));
+                else addWaitingDelivery(menu, slots[i], waiting.get(index - events.size()), isEnglish);
+            }
+            if (start > 0) addPageButton(menu, mainLayout.slot("previous"), "previous", isEnglish,
+                viewer -> openMainMenu(viewer, start / slots.length - 1));
+            if (start + slots.length < count) addPageButton(menu, mainLayout.slot("next"), "next", isEnglish,
+                viewer -> openMainMenu(viewer, start / slots.length + 1));
+        } else {
+            int[] activeSlots = mainLayout.group("active");
+            int[] waitingSlots = mainLayout.group("waiting");
+            for (int i = 0; i < events.size() && i < activeSlots.length; i++) {
+                addActiveDelivery(menu, player, activeSlots[i], events.get(i));
+            }
+            for (int i = 0; i < waiting.size() && i < waitingSlots.length; i++) {
+                addWaitingDelivery(menu, waitingSlots[i], waiting.get(i), isEnglish);
             }
         }
 
@@ -296,7 +301,7 @@ public class DeliveryGUI {
         String leaderboardLore = isEnglish ? sc("see top deliverers") : sc("en cok teslim edenleri gor");
         String clickText = isEnglish ? sc("click") : sc("tikla");
         menu.onClick(mainLayout.slot("leaderboard"), this::openLeaderboard);
-        inv.setItem(mainLayout.slot("leaderboard"), createHead(HEAD_TOP,
+        inv.setItem(mainLayout.slot("leaderboard"), createGuiIcon("top-ten-gui", HEAD_TOP, player,
             getLang("gui.top-ten-gui-item-name", "§b" + leaderboardName), getLore("gui.top-ten-gui-item-lore", List.of(
             "",
             "§7" + leaderboardLore,
@@ -311,7 +316,7 @@ public class DeliveryGUI {
             viewer.closeInventory();
             viewer.performCommand("teslimat help");
         });
-        inv.setItem(mainLayout.slot("help"), createHead(HEAD_HELP,
+        inv.setItem(mainLayout.slot("help"), createGuiIcon("help", HEAD_HELP, player,
             getLang("gui.help-item-name", "§f" + helpName), getLore("gui.help-item-lore", List.of(
             "",
             "§7" + helpLore,
@@ -320,6 +325,17 @@ public class DeliveryGUI {
         ), Map.of())));
 
         player.openInventory(inv);
+    }
+
+    private void addActiveDelivery(Menu menu, Player player, int slot, ActiveEvent event) {
+        menu.getInventory().setItem(slot, createDeliveryItem(player, event));
+        menu.onClick(slot, viewer -> openDeliveryMenu(viewer, event));
+    }
+
+    private void addWaitingDelivery(Menu menu, int slot, com.deliverycore.model.DeliveryDefinition delivery, boolean english) {
+        menu.getInventory().setItem(slot, createWaitingDeliveryItem(delivery));
+        menu.onClick(slot, viewer -> viewer.sendMessage(getLang("delivery.error.not_started",
+            english ? "&7This delivery has not started." : "&7Bu teslimat henüz başlamadı.")));
     }
     
     private ItemStack createWaitingDeliveryItem(com.deliverycore.model.DeliveryDefinition delivery) {
@@ -419,8 +435,7 @@ public class DeliveryGUI {
             Map.of("name", deliveryName, "delivery", deliveryName)));
         Inventory inv = menu.getInventory();
         
-        ItemStack bg = createItem(Material.BLACK_STAINED_GLASS_PANE, " ");
-        for (int i = 0; i < inv.getSize(); i++) inv.setItem(i, bg);
+        fillBackground(inv);
 
         String itemName = getAcceptedItemDisplay(event);
         int playerCount = event.getPlayerDeliveries().getOrDefault(player.getUniqueId(), 0);
@@ -464,7 +479,7 @@ public class DeliveryGUI {
             if (inventoryAction != null) inventoryAction.accept(viewer, event);
         });
         Map<String, String> deliveryValues = Map.of("amount", Integer.toString(playerCount), "delivery", itemName);
-        inv.setItem(deliveryLayout.slot("inventory"), createHead(HEAD_INVENTORY,
+        inv.setItem(deliveryLayout.slot("inventory"), createGuiIcon("deliver", HEAD_INVENTORY, player,
             getLang("gui.deliver-item-name", "§a" + deliverFromInvText, deliveryValues),
             getLore("gui.deliver-item-lore", List.of(
             "",
@@ -473,6 +488,13 @@ public class DeliveryGUI {
             "",
             "§a" + clickText
         ), deliveryValues)));
+        if (deliveryLayout.slots().containsKey("leaderboard")) {
+            int slot = deliveryLayout.slot("leaderboard");
+            menu.onClick(slot, viewer -> openLeaderboard(viewer, event, true));
+            inv.setItem(slot, createGuiIcon("top-ten-gui", HEAD_TOP, player,
+                getLang("gui.top-ten-gui-item-name", isEnglish ? "§bLeaderboard" : "§bSıralama"),
+                getLore("gui.top-ten-gui-item-lore", List.of(), Map.of())));
+        }
 
         // Sandıktan teslim et (slot 24)
         menu.onClick(deliveryLayout.slot("chest"), viewer -> {
@@ -510,16 +532,18 @@ public class DeliveryGUI {
     // ═══════════════════════════════════════════════════════════════════════════
 
     public void openLeaderboard(Player player) {
-        boolean isEnglish = "en".equals(getCurrentLanguage());
         var events = deliveryService.getAllActiveEvents();
-        String delivery = events.isEmpty() ? "" : getDeliveryDisplayName(events.get(0).getDeliveryName());
+        openLeaderboard(player, events.isEmpty() ? null : events.get(0), false);
+    }
+
+    private void openLeaderboard(Player player, ActiveEvent event, boolean returnToDelivery) {
+        boolean isEnglish = "en".equals(getCurrentLanguage());
+        String delivery = event == null ? "" : getDeliveryDisplayName(event.getDeliveryName());
         Menu menu = new Menu(rankingLayout.size(), getLeaderboardTitle(delivery));
         Inventory inv = menu.getInventory();
-        
-        ItemStack bg = createItem(Material.BLACK_STAINED_GLASS_PANE, " ");
-        for (int i = 0; i < inv.getSize(); i++) inv.setItem(i, bg);
+        fillBackground(inv);
 
-        if (events.isEmpty()) {
+        if (event == null) {
             String noActiveText = isEnglish ? sc("no active delivery") : sc("aktif teslimat yok");
             String waitingText = isEnglish ? sc("waiting for delivery event") : sc("siralama icin teslimat bekleniyor");
             inv.setItem(rankingLayout.slot("empty"), createHead(HEAD_HELP, "§7" + noActiveText, Arrays.asList(
@@ -527,7 +551,6 @@ public class DeliveryGUI {
                 "§8" + waitingText
             )));
         } else {
-            ActiveEvent event = events.get(0);
             var deliveries = event.getPlayerDeliveries();
             
             List<Map.Entry<UUID, Integer>> sorted = deliveries.entrySet().stream()
@@ -555,7 +578,10 @@ public class DeliveryGUI {
 
         String backText = isEnglish ? sc("back") : sc("geri");
         String returnMainText = isEnglish ? sc("return to main menu") : sc("ana menuye don");
-        menu.onClick(rankingLayout.slot("back"), this::openMainMenu);
+        menu.onClick(rankingLayout.slot("back"), viewer -> {
+            if (returnToDelivery && event != null) openDeliveryMenu(viewer, event);
+            else openMainMenu(viewer);
+        });
         inv.setItem(rankingLayout.slot("back"), createHead(HEAD_BACK, "§c" + backText, Arrays.asList(
             "",
             "§7" + returnMainText
@@ -599,6 +625,28 @@ public class DeliveryGUI {
         ItemMeta meta = item.getItemMeta();
         if (meta != null) { meta.setDisplayName(name); item.setItemMeta(meta); }
         return item;
+    }
+
+    private void fillBackground(Inventory inventory) {
+        if (guiSettings != null && !guiSettings.getBoolean("filler-item", true)) return;
+        ItemStack filler = createGuiIcon("filler", Material.BLACK_STAINED_GLASS_PANE.name(), null, " ", List.of());
+        for (int i = 0; i < inventory.getSize(); i++) inventory.setItem(i, filler);
+    }
+
+    private ItemStack createGuiIcon(String key, String fallback, Player player, String name, List<String> lore) {
+        String icon = guiSettings == null ? fallback : guiSettings.getString(key + "-material", fallback);
+        if ("%player_name%".equals(icon) && player != null) return createPlayerHead(player.getUniqueId(), name, lore);
+        return createIcon(icon, fallback, name, lore);
+    }
+
+    private ItemStack createIcon(String icon, String fallback, String name, List<String> lore) {
+        Material material = Material.matchMaterial(icon);
+        if (material != null && material.isItem() && !material.isAir()) {
+            return withDescription(new ItemStack(material), name, lore);
+        }
+        if (icon.length() > 64) return createHead(icon, name, lore);
+        if (!icon.equals(fallback)) return createIcon(fallback, fallback, name, lore);
+        return withDescription(new ItemStack(Material.PAPER), name, lore);
     }
 
     private ItemStack createHead(String texture, String name, List<String> lore) {
@@ -707,21 +755,24 @@ public class DeliveryGUI {
             String key = complete ? "gui.checkpoint-completed" : "gui.checkpoint-await";
             Map<String, String> values = Map.of("line", Integer.toString(from + i + 1),
                 "amount", Long.toString(entry.amount()), "checkpoint_lore", "");
-            inv.setItem(slots[i], withDescription(new ItemStack(complete ? Material.LIME_DYE : Material.PAPER),
+            inv.setItem(slots[i], createGuiIcon(complete ? "checkpoint-completed" : "checkpoint-await",
+                    (complete ? Material.LIME_DYE : Material.PAPER).name(), player,
                     getLang(key + "-name", (complete ? "§a" : "§e") + entry.name(), values),
                     getLore(key + "-lore", List.of("§7" + status,
                         "§f" + progress.amount() + " §7/ §f" + entry.amount()), values)));
         }
-        if (page > 0) addPageButton(event, page - 1, menu, "previous",
-                english ? "§ePrevious page" : "§eÖnceki sayfa");
-        if (from + slots.length < entries.size()) addPageButton(event, page + 1, menu, "next",
-                english ? "§eNext page" : "§eSonraki sayfa");
+        if (page > 0) addPageButton(menu, deliveryLayout.slot("previous"), "previous", english,
+                viewer -> openDeliveryMenu(viewer, event, page - 1));
+        if (from + slots.length < entries.size()) addPageButton(menu, deliveryLayout.slot("next"), "next", english,
+                viewer -> openDeliveryMenu(viewer, event, page + 1));
     }
 
-    private void addPageButton(ActiveEvent event, int page, Menu menu, String key, String title) {
-        int slot = deliveryLayout.slot(key);
-        menu.getInventory().setItem(slot, createItem(Material.ARROW, getLang("gui." + key + "-page-name", title)));
-        menu.onClick(slot, viewer -> openDeliveryMenu(viewer, event, page));
+    private void addPageButton(Menu menu, int slot, String key, boolean english, Consumer<Player> action) {
+        String title = key.equals("next") ? (english ? "§eNext page" : "§eSonraki sayfa")
+            : (english ? "§ePrevious page" : "§eÖnceki sayfa");
+        menu.getInventory().setItem(slot, createGuiIcon(key + "-page", Material.ARROW.name(), null,
+            getLang("gui." + key + "-page-name", title), List.of()));
+        menu.onClick(slot, action);
     }
 
     private ItemStack withDescription(ItemStack item, String name, List<String> lore) {
