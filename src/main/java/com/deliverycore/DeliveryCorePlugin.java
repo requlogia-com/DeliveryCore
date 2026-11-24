@@ -49,6 +49,7 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.block.Chest;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -530,7 +531,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
             getLogger()
         );
 
-        deliveryGUI = new DeliveryGUI(configManager, deliveryService);
+        deliveryGUI = new DeliveryGUI(this, configManager, deliveryService);
         deliveryGUI.setLanguageSupplier(this::getCurrentLanguage);
         deliveryGUI.setMilestones(categoryMilestones);
         deliveryGUI.setScheduler(schedulerService);
@@ -749,6 +750,11 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
                 deliverPendingRewardsToPlayer(player);
             }, 20L);
         }
+    }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        deliveryGUI.cancelChestSelection(event.getPlayer().getUniqueId());
     }
 
     @EventHandler

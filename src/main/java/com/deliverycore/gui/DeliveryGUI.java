@@ -20,6 +20,8 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.SkullMeta;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.time.Duration;
@@ -29,6 +31,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 public class DeliveryGUI {
+    private static final long CHEST_SELECTION_TICKS = 200;
+    private static final Duration CHEST_SELECTION_DURATION = Duration.ofSeconds(10);
+
+    private final JavaPlugin plugin;
     private final ConfigManager configManager;
     private final DeliveryService deliveryService;
     
@@ -37,9 +43,7 @@ public class DeliveryGUI {
     private final Map<String, String> categoryDisplayNames = new ConcurrentHashMap<>();
     private final Map<String, String> deliveryDisplayNames = new ConcurrentHashMap<>();
     private final Map<String, String> categoryHeads = new ConcurrentHashMap<>();
-    private final Map<UUID, String> chestSelectionMode = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> chestSelectionTimeout = new ConcurrentHashMap<>();
-    private final Set<UUID> invalidChestSelectionWarned = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, ChestSelection> chestSelections = new HashMap<>();
     private final Map<UUID, String> playerNameCache = new ConcurrentHashMap<>();
     
     // Dil desteği
@@ -98,7 +102,8 @@ public class DeliveryGUI {
     public static final String DELIVERY_PREFIX = DELIVERY_PREFIX_TR;
     public static final String LEADERBOARD_TITLE = LEADERBOARD_TITLE_TR;
 
-    public DeliveryGUI(ConfigManager cm, DeliveryService ds) {
+    public DeliveryGUI(JavaPlugin plugin, ConfigManager cm, DeliveryService ds) {
+        this.plugin = plugin;
         this.configManager = cm;
         this.deliveryService = ds;
         initDefaults();
@@ -247,22 +252,65 @@ public class DeliveryGUI {
     public void cachePlayerName(UUID id, String name) { if (id != null && name != null) playerNameCache.put(id, name); }
 
     public void startChestSelection(Player player, String deliveryName) {
-        invalidChestSelectionWarned.remove(player.getUniqueId());
-        chestSelectionMode.put(player.getUniqueId(), deliveryName);
-        chestSelectionTimeout.put(player.getUniqueId(), System.currentTimeMillis() + 10000);
+        UUID id = player.getUniqueId();
+        cancelChestSelection(id);
+        ChestSelection selection = new ChestSelection(player, deliveryName);
+        chestSelections.put(id, selection);
+        selection.task = Bukkit.getScheduler().runTaskLater(plugin, () -> expireChestSelection(id, selection),
+            CHEST_SELECTION_TICKS);
     }
+
     public boolean isInChestSelectionMode(UUID id) {
-        Long timeout = chestSelectionTimeout.get(id);
-        if (timeout == null) return false;
-        if (System.currentTimeMillis() > timeout) { cancelChestSelection(id); return false; }
-        return chestSelectionMode.containsKey(id);
+        ChestSelection selection = chestSelections.get(id);
+        if (selection == null) return false;
+        if (System.nanoTime() - selection.expiresAt < 0) return true;
+        expireChestSelection(id, selection);
+        return false;
     }
-    public String getChestSelectionDelivery(UUID id) { return chestSelectionMode.get(id); }
-    public boolean markInvalidChestSelectionWarned(UUID id) { return invalidChestSelectionWarned.add(id); }
+
+    public String getChestSelectionDelivery(UUID id) {
+        ChestSelection selection = chestSelections.get(id);
+        return selection == null ? null : selection.deliveryName;
+    }
+
+    public boolean markInvalidChestSelectionWarned(UUID id) {
+        ChestSelection selection = chestSelections.get(id);
+        if (selection == null || selection.warned) return false;
+        selection.warned = true;
+        return true;
+    }
+
     public void cancelChestSelection(UUID id) {
-        chestSelectionMode.remove(id);
-        chestSelectionTimeout.remove(id);
-        invalidChestSelectionWarned.remove(id);
+        ChestSelection selection = chestSelections.remove(id);
+        if (selection != null) selection.task.cancel();
+    }
+
+    private void expireChestSelection(UUID id, ChestSelection selection) {
+        if (chestSelections.get(id) != selection) return;
+        long remaining = selection.expiresAt - System.nanoTime();
+        if (remaining > 0) {
+            long ticks = Duration.ofNanos(remaining).toMillis() / 50 + 1;
+            selection.task = Bukkit.getScheduler().runTaskLater(plugin, () -> expireChestSelection(id, selection), ticks);
+            return;
+        }
+        cancelChestSelection(id);
+        if (selection.player.isOnline()) {
+            selection.player.sendMessage(getLang("delivery.chest.timeout", "en".equals(getCurrentLanguage())
+                ? "&cChest selection timed out." : "&cSandık seçim süresi doldu."));
+        }
+    }
+
+    private static final class ChestSelection {
+        private final Player player;
+        private final String deliveryName;
+        private final long expiresAt = System.nanoTime() + CHEST_SELECTION_DURATION.toNanos();
+        private BukkitTask task;
+        private boolean warned;
+
+        private ChestSelection(Player player, String deliveryName) {
+            this.player = player;
+            this.deliveryName = deliveryName;
+        }
     }
 
     public static boolean isDeliveryGUI(String title) { 
