@@ -33,6 +33,7 @@ import com.deliverycore.util.LoggingService;
 import com.deliverycore.webhook.WebhookService;
 import com.deliverycore.webhook.WebhookServiceImpl;
 import org.bukkit.Bukkit;
+import org.bukkit.Sound;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
@@ -82,6 +83,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
     private final java.util.Map<String, org.bukkit.scheduler.BukkitTask> expiryTasks = new java.util.HashMap<>();
 
     private String currentLanguage = "tr";
+    private Sound deliverSound = Sound.ENTITY_PLAYER_LEVELUP;
 
     @Override
     public void onEnable() {
@@ -441,6 +443,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
 
         // Dil ayarını yükle
         loadLanguageSetting();
+        loadDeliverySound();
 
         initializeConfigDependentServices();
     }
@@ -471,6 +474,16 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
      */
     public String getCurrentLanguage() {
         return currentLanguage;
+    }
+
+    private void loadDeliverySound() {
+        String name = getConfig().getString("settings.deliver-sound", "ENTITY_PLAYER_LEVELUP");
+        try {
+            deliverSound = Sound.class.cast(Sound.class.getField(name.trim().toUpperCase(java.util.Locale.ROOT)).get(null));
+        } catch (ReflectiveOperationException | ClassCastException e) {
+            deliverSound = Sound.ENTITY_PLAYER_LEVELUP;
+            getLogger().warning("Unknown settings.deliver-sound: " + name);
+        }
     }
 
     private void initializeConfigDependentServices() {
@@ -590,6 +603,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
 
     private void reloadAllSettings() {
         reloadConfig();
+        dataManager.reloadAutoSaveInterval();
         reloadMilestones();
         categoryService = new CategoryServiceImpl(configManager.getCategoryConfig());
         ((DeliveryServiceImpl) deliveryService).reloadConfiguration(configManager.getDeliveryConfig(), categoryService);
@@ -598,6 +612,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         resumeActiveEvents();
         // Dil ayarını yeniden yükle
         loadLanguageSetting();
+        loadDeliverySound();
 
         // items.yml'yi yeniden yükle
         deliveryGUI.loadItemsConfig(getDataFolder());
@@ -914,7 +929,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         player.sendMessage(language.format("delivery.success.message", currentLanguage,
             "&a{amount} &7adet teslim edildi.", values) + " " + language.format("delivery.success.stats",
             currentLanguage, "&7Toplam: &f{total} &8| &7Sıra: &e#{rank}", values));
-        player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+        player.playSound(player.getLocation(), deliverSound, 1.0f, 1.0f);
     }
 
     // Eski metod - uyumluluk için

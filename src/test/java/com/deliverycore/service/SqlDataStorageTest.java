@@ -1,5 +1,6 @@
 package com.deliverycore.service;
 
+import org.bukkit.configuration.MemoryConfiguration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -8,11 +9,24 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class SqlDataStorageTest {
     @TempDir
     Path folder;
+
+    @Test
+    void usesImportedStorageWhenNativeSettingIsOnlyADefault() {
+        var config = new MemoryConfiguration();
+        config.addDefault("data.storage", "yaml");
+        config.set("database.database-type", "SQLite");
+
+        assertInstanceOf(SqlDataStorage.class, DataStorage.open(folder, config));
+
+        config.set("data.storage", "yaml");
+        assertInstanceOf(YamlDataStorage.class, DataStorage.open(folder, config));
+    }
 
     @Test
     void importsLegacyProgressOnlyOnFirstOpenAndPreservesUnknownFields() throws Exception {

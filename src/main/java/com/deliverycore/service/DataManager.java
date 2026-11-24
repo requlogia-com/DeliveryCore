@@ -5,6 +5,7 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.io.IOException;
 import java.time.ZoneId;
@@ -28,6 +29,7 @@ public class DataManager {
     private final DataStorage storage;
     private final Logger logger;
     private YamlConfiguration data;
+    private BukkitTask autoSave;
 
     private boolean isDirty;
     private final Object lock = new Object();
@@ -38,7 +40,7 @@ public class DataManager {
         this.logger = plugin.getLogger();
         this.storage = DataStorage.open(plugin.getDataFolder().toPath(), plugin.getConfig());
         loadData();
-        startAutoSaveTask();
+        reloadAutoSaveInterval();
     }
 
     public void loadData() {
@@ -54,10 +56,15 @@ public class DataManager {
         }
     }
 
-    private void startAutoSaveTask() {
-        long interval = plugin.getConfig().getInt("data.auto-save-interval", 5) * 1200L;
+    public void reloadAutoSaveInterval() {
+        var config = plugin.getConfig();
+        int minutes = config.isSet("data.auto-save-interval") ? config.getInt("data.auto-save-interval")
+            : config.getInt("settings.auto-save-period", 5);
+        if (autoSave != null) autoSave.cancel();
+        autoSave = null;
+        long interval = minutes * 1200L;
         if (interval > 0) {
-            Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> save(false), interval, interval);
+            autoSave = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> save(false), interval, interval);
         }
     }
 

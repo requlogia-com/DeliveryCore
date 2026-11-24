@@ -20,7 +20,8 @@ interface DataStorage {
     static DataStorage open(Path directory, ConfigurationSection config) {
         Path legacy = directory.resolve("data.yml").toAbsolutePath().normalize();
         YamlDataStorage yaml = new YamlDataStorage(legacy);
-        String backend = config.getString("data.storage", "yaml").trim().toLowerCase(Locale.ROOT);
+        String backend = (config.isSet("data.storage") ? config.getString("data.storage", "yaml")
+            : config.getString("database.database-type", "yaml")).trim().toLowerCase(Locale.ROOT);
         return switch (backend) {
             case "yaml" -> yaml;
             case "sqlite" -> {
@@ -32,19 +33,28 @@ interface DataStorage {
                 yield SqlDataStorage.sqlite(database, yaml::validatedSnapshot);
             }
             case "mysql" -> {
-                String url = config.getString("data.mysql.url", "jdbc:mysql://localhost:3306/deliverycore");
+                String url = config.isSet("data.mysql.url") ? config.getString("data.mysql.url") : importedMysqlUrl(config);
                 if (!url.startsWith("jdbc:mysql://")) {
                     throw new IllegalArgumentException("data.mysql.url must start with jdbc:mysql://");
                 }
                 Properties properties = new Properties();
-                properties.setProperty("user", config.getString("data.mysql.username", "deliverycore"));
-                properties.setProperty("password", config.getString("data.mysql.password", ""));
+                properties.setProperty("user", config.isSet("data.mysql.username") ? config.getString("data.mysql.username")
+                    : config.getString("database.user-name", "deliverycore"));
+                properties.setProperty("password", config.isSet("data.mysql.password") ? config.getString("data.mysql.password")
+                    : config.getString("database.password", ""));
                 properties.setProperty("connectTimeout", "5000");
                 properties.setProperty("socketTimeout", "10000");
                 yield SqlDataStorage.mysql(url, properties, yaml::validatedSnapshot);
             }
             default -> throw new IllegalArgumentException("Invalid data.storage. Choose yaml, sqlite or mysql.");
         };
+    }
+
+    private static String importedMysqlUrl(ConfigurationSection config) {
+        String host = config.getString("database.host", "localhost");
+        String port = config.getString("database.port", "3306");
+        String database = config.getString("database.table-name", "deliverycore");
+        return "jdbc:mysql://" + host + ":" + port + "/" + database;
     }
 }
 
