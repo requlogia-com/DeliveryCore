@@ -23,7 +23,9 @@ public class CategoryConfigImpl implements CategoryConfig {
      * @throws IOException if the file cannot be read
      */
     public CategoryConfigImpl(String filePath) throws IOException {
-        this(new FileInputStream(filePath));
+        try (InputStream input = new FileInputStream(filePath)) {
+            this.categories = parseCategories(input);
+        }
     }
     
     /**
@@ -42,6 +44,17 @@ public class CategoryConfigImpl implements CategoryConfig {
      */
     public CategoryConfigImpl(Map<String, List<String>> categoriesMap) {
         this.categories = convertToCategories(categoriesMap, Map.of());
+    }
+
+    private CategoryConfigImpl(Map<String, Category> categories, DeliveryConfig deliveries) {
+        Map<String, Category> merged = new LinkedHashMap<>(categories);
+        deliveries.getImportedDeliveries().forEach((id, delivery) ->
+                merged.putIfAbsent(id, new Category(id, delivery.definition().acceptedItems())));
+        this.categories = Collections.unmodifiableMap(merged);
+    }
+
+    CategoryConfigImpl withImportedDeliveries(DeliveryConfig deliveries) {
+        return deliveries.getImportedDeliveries().isEmpty() ? this : new CategoryConfigImpl(categories, deliveries);
     }
 
     @SuppressWarnings("unchecked")

@@ -12,6 +12,7 @@ import com.deliverycore.placeholder.DeliveryExpansion;
 import com.deliverycore.service.ActiveEvent;
 import com.deliverycore.service.CategoryMilestones;
 import com.deliverycore.service.InventoryDelivery;
+import com.deliverycore.service.ImportedDeliveryRewards;
 import org.bukkit.inventory.Inventory;
 import com.deliverycore.placeholder.PlaceholderEngine;
 import com.deliverycore.placeholder.PlaceholderEngineImpl;
@@ -102,7 +103,6 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
             dataManager = new DataManager(this);
             itemRegistry = new DeliveryItemRegistry(this);
             categoryMilestones = new CategoryMilestones(dataManager);
-            reloadMilestones();
 
             initializeServices();
             loadConfigurations();
@@ -240,6 +240,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
             var task = expiryTasks.remove(event.getDeliveryName());
             if (task != null) task.cancel();
             dataManager.removeActiveEvent(event.getDeliveryName());
+            ImportedDeliveryRewards.distribute(configManager.getDeliveryConfig(), event, rewardService);
         }
     }
 
@@ -284,6 +285,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
 
     private void sendWebhookWithWinners(String deliveryName, String itemTR, String categoryTR,
                                          java.util.List<com.deliverycore.model.Winner> winners) {
+        if (!allowsDeliveryWebhooks(deliveryName)) return;
         try {
             File configFile = new File(getDataFolder(), "config.yml");
             if (!configFile.exists()) return;
@@ -330,6 +332,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
      * Etkinlik başlangıcı için webhook gönderir
      */
     private void sendWebhook(String deliveryName, String type, String itemTR, String categoryTR) {
+        if (!allowsDeliveryWebhooks(deliveryName)) return;
         try {
             // Global webhook URL'yi al
             File configFile = new File(getDataFolder(), "config.yml");
@@ -356,6 +359,11 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         } catch (Exception e) {
             getLogger().warning("[WEBHOOK] Hata: " + e.getMessage());
         }
+    }
+
+    private boolean allowsDeliveryWebhooks(String deliveryName) {
+        var delivery = configManager.getDeliveryConfig().getImportedDeliveries().get(deliveryName);
+        return delivery == null || delivery.sendWebhooks();
     }
 
     /**
@@ -422,6 +430,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
 
     private void loadConfigurations() {
         configManager.loadAll();
+        reloadMilestones();
 
         configManager.validate().forEach(error ->
             getLogger().warning(String.format("[%s] %s - %s: %s",
@@ -490,6 +499,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         deliveryGUI = new DeliveryGUI(configManager, deliveryService);
         deliveryGUI.setLanguageSupplier(this::getCurrentLanguage);
         deliveryGUI.setMilestones(categoryMilestones);
+        deliveryGUI.setScheduler(schedulerService);
         deliveryGUI.setInventoryAction(this::deliverFromInventory);
         deliveryGUI.setItemRegistry(itemRegistry);
         loadGUISettings();
@@ -575,7 +585,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
      * Tüm ayarları yeniden yükler (reload komutu için)
      */
     private void reloadMilestones() {
-        categoryMilestones.reload(new File(getDataFolder(), "categories.yml"));
+        categoryMilestones.reload(new File(getDataFolder(), "categories.yml"), configManager.getDeliveryConfig());
     }
 
     private void reloadAllSettings() {
@@ -887,12 +897,17 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
         dataManager.saveActiveEvent(event);
         dataManager.updatePlayerStats(player.getUniqueId(), player.getName(), delivered);
         deliveryGUI.cachePlayerName(player.getUniqueId(), player.getName());
-        categoryMilestones.record(player, event.getResolvedCategory(), delivered);
+        String category = deliveryGUI.getCategoryDisplayName(event.getResolvedCategory());
+        categoryMilestones.record(player, event.getResolvedCategory(), delivered, line -> {
+            String message = language.format("messages.checkpoint-completed", currentLanguage, "",
+                Map.of("category", category, "line", Integer.toString(line)));
+            if (!message.isBlank()) player.sendMessage(message);
+        });
 
         int total = event.getPlayerDeliveryCount(player.getUniqueId());
         int rank = calculateRank(event, player.getUniqueId());
         Map<String, String> values = Map.of("amount", Integer.toString(delivered), "item", item,
-            "category", deliveryGUI.getCategoryDisplayName(event.getResolvedCategory()),
+            "category", category,
             "total", Integer.toString(total), "rank", Integer.toString(rank));
         player.sendTitle(language.format("delivery.success.title", currentLanguage, "&a&lTESLİM EDİLDİ!", values),
             language.format("delivery.success.subtitle", currentLanguage, "&e{amount} &7adet", values), 10, 50, 10);

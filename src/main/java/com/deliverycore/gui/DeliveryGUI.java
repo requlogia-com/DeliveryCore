@@ -2,7 +2,9 @@ package com.deliverycore.gui;
 
 import com.deliverycore.config.ConfigManager;
 import com.deliverycore.item.DeliveryItemRegistry;
+import com.deliverycore.model.ImportedDelivery;
 import com.deliverycore.service.CategoryMilestones;
+import com.deliverycore.service.SchedulerService;
 import org.bukkit.inventory.InventoryHolder;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -20,6 +22,8 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.SkullMeta;
 
 import java.io.File;
+import java.time.Duration;
+import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
@@ -40,6 +44,7 @@ public class DeliveryGUI {
     // Dil desteği
     private Supplier<String> languageSupplier;
     private CategoryMilestones milestones;
+    private SchedulerService scheduler;
     private DeliveryItemRegistry itemRegistry;
     private BiConsumer<Player, ActiveEvent> inventoryAction;
     private MenuLayout mainLayout = MenuLayout.main();
@@ -48,6 +53,7 @@ public class DeliveryGUI {
     private ConfigurationSection guiSettings;
 
     public void setMilestones(CategoryMilestones milestones) { this.milestones = milestones; }
+    public void setScheduler(SchedulerService scheduler) { this.scheduler = scheduler; }
     public void setItemRegistry(DeliveryItemRegistry itemRegistry) { this.itemRegistry = itemRegistry; }
     public void setInventoryAction(BiConsumer<Player, ActiveEvent> action) { this.inventoryAction = action; }
 
@@ -216,8 +222,22 @@ public class DeliveryGUI {
         return itemDisplayNames.getOrDefault(itemName.toUpperCase(), itemName.replace("_", " "));
     }
     public double getItemPrice(String itemName) { return itemPrices.getOrDefault(itemName.toUpperCase(), 0.0); }
-    public String getCategoryDisplayName(String catName) { return categoryDisplayNames.getOrDefault(catName.toLowerCase(), catName); }
-    public String getDeliveryDisplayName(String deliveryName) { return deliveryDisplayNames.getOrDefault(deliveryName.toLowerCase(), deliveryName); }
+    public String getCategoryDisplayName(String catName) {
+        return categoryDisplayNames.getOrDefault(catName.toLowerCase(Locale.ROOT), importedTitle(catName));
+    }
+
+    public String getDeliveryDisplayName(String deliveryName) {
+        return deliveryDisplayNames.getOrDefault(deliveryName.toLowerCase(Locale.ROOT), importedTitle(deliveryName));
+    }
+
+    private ImportedDelivery importedDelivery(String id) {
+        return configManager.getDeliveryConfig().getImportedDeliveries().get(id);
+    }
+
+    private String importedTitle(String id) {
+        ImportedDelivery imported = importedDelivery(id);
+        return imported == null ? id : color(imported.title());
+    }
     public void setCategoryDisplayName(String cat, String name) { categoryDisplayNames.put(cat.toLowerCase(), name); }
     public void setDeliveryDisplayName(String del, String name) { deliveryDisplayNames.put(del.toLowerCase(), name); }
     public void setCategoryHead(String cat, String texture) { categoryHeads.put(cat.toLowerCase(), texture); }
@@ -279,7 +299,7 @@ public class DeliveryGUI {
             for (int i = 0; i < slots.length && start + i < count; i++) {
                 int index = start + i;
                 if (index < events.size()) addActiveDelivery(menu, player, slots[i], events.get(index));
-                else addWaitingDelivery(menu, slots[i], waiting.get(index - events.size()), isEnglish);
+                else addWaitingDelivery(menu, player, slots[i], waiting.get(index - events.size()), isEnglish);
             }
             if (start > 0) addPageButton(menu, mainLayout.slot("previous"), "previous", isEnglish,
                 viewer -> openMainMenu(viewer, start / slots.length - 1));
@@ -292,7 +312,7 @@ public class DeliveryGUI {
                 addActiveDelivery(menu, player, activeSlots[i], events.get(i));
             }
             for (int i = 0; i < waiting.size() && i < waitingSlots.length; i++) {
-                addWaitingDelivery(menu, waitingSlots[i], waiting.get(i), isEnglish);
+                addWaitingDelivery(menu, player, waitingSlots[i], waiting.get(i), isEnglish);
             }
         }
 
@@ -332,10 +352,13 @@ public class DeliveryGUI {
         menu.onClick(slot, viewer -> openDeliveryMenu(viewer, event));
     }
 
-    private void addWaitingDelivery(Menu menu, int slot, com.deliverycore.model.DeliveryDefinition delivery, boolean english) {
-        menu.getInventory().setItem(slot, createWaitingDeliveryItem(delivery));
-        menu.onClick(slot, viewer -> viewer.sendMessage(getLang("delivery.error.not_started",
-            english ? "&7This delivery has not started." : "&7Bu teslimat henüz başlamadı.")));
+    private void addWaitingDelivery(Menu menu, Player player, int slot, com.deliverycore.model.DeliveryDefinition delivery, boolean english) {
+        ImportedDelivery imported = importedDelivery(delivery.name());
+        menu.getInventory().setItem(slot, imported == null ? createWaitingDeliveryItem(delivery)
+            : createImportedCard(player, imported, null));
+        menu.onClick(slot, viewer -> viewer.sendMessage(imported == null
+            ? getLang("delivery.error.not_started", english ? "&7This delivery has not started." : "&7Bu teslimat henüz başlamadı.")
+            : importedTime(imported, null)));
     }
     
     private ItemStack createWaitingDeliveryItem(com.deliverycore.model.DeliveryDefinition delivery) {
@@ -389,6 +412,8 @@ public class DeliveryGUI {
     }
 
     private ItemStack createDeliveryItem(Player player, ActiveEvent event) {
+        ImportedDelivery imported = importedDelivery(event.getDeliveryName());
+        if (imported != null) return createImportedCard(player, imported, event);
         boolean isEnglish = "en".equals(getCurrentLanguage());
         String itemName = getAcceptedItemDisplay(event);
         String deliveryName = getDeliveryDisplayName(event.getDeliveryName());
@@ -414,6 +439,44 @@ public class DeliveryGUI {
             "",
             "§a" + clickDeliverText
         ));
+    }
+
+    private ItemStack createImportedCard(Player player, ImportedDelivery imported, ActiveEvent event) {
+        String prefix = "%delivery_" + imported.definition().name() + "_";
+        String amount = Long.toString(importedAmount(player, imported.definition().name()));
+        String time = importedTime(imported, event);
+        List<String> lore = imported.menuLore().stream()
+            .map(line -> color(line.replace(prefix + "time%", time).replace(prefix + "amount%", amount)))
+            .toList();
+        return createIcon(imported.icon(), event == null ? HEAD_WAITING : HEAD_DELIVERY, color(imported.menuName()), lore);
+    }
+
+    private long importedAmount(Player player, String category) {
+        return milestones == null ? 0 : milestones.getProgress(player.getUniqueId(), category).amount();
+    }
+
+    private String importedTime(ImportedDelivery imported, ActiveEvent event) {
+        var definition = imported.definition();
+        ZonedDateTime now = ZonedDateTime.now(definition.timezone());
+        if (event != null) return formatRemaining(Duration.between(now, event.getEndTime()));
+        if (scheduler == null) return definition.schedule().start();
+        var start = scheduler.parseScheduleExpression(definition.schedule().start(), definition.timezone());
+        if (start.isPresent() && start.get().isAfter(now)) return formatRemaining(Duration.between(now, start.get()));
+        var end = scheduler.parseScheduleExpression(definition.schedule().end(), definition.timezone());
+        if (end.isPresent() && end.get().isAfter(now)) return formatRemaining(Duration.between(now, end.get()));
+        return getLang("system.ended-placeholder", "&c" + ("en".equals(getCurrentLanguage()) ? "Ended" : "Bitti"));
+    }
+
+    private String formatRemaining(Duration remaining) {
+        boolean english = "en".equals(getCurrentLanguage());
+        String[] units = getLang("system.time-placeholders", english ? "d-h-m" : "g-s-dk").split("-", -1);
+        if (units.length != 3) units = new String[] {"d", "h", "m"};
+        Duration time = remaining.isNegative() ? Duration.ZERO : remaining;
+        return "%d%s %d%s %d%s".formatted(time.toDays(), units[0], time.toHoursPart(), units[1], time.toMinutesPart(), units[2]);
+    }
+
+    private static String color(String text) {
+        return org.bukkit.ChatColor.translateAlternateColorCodes('&', text);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -478,7 +541,10 @@ public class DeliveryGUI {
             viewer.closeInventory();
             if (inventoryAction != null) inventoryAction.accept(viewer, event);
         });
-        Map<String, String> deliveryValues = Map.of("amount", Integer.toString(playerCount), "delivery", itemName);
+        ImportedDelivery imported = importedDelivery(event.getDeliveryName());
+        String itemLore = imported == null || imported.itemLore().isEmpty() ? itemName : String.join("\n", imported.itemLore());
+        long displayedAmount = imported == null ? playerCount : importedAmount(player, event.getResolvedCategory());
+        Map<String, String> deliveryValues = Map.of("amount", Long.toString(displayedAmount), "delivery", itemLore);
         inv.setItem(deliveryLayout.slot("inventory"), createGuiIcon("deliver", HEAD_INVENTORY, player,
             getLang("gui.deliver-item-name", "§a" + deliverFromInvText, deliveryValues),
             getLore("gui.deliver-item-lore", List.of(
@@ -754,12 +820,13 @@ public class DeliveryGUI {
                     : (english ? "In progress" : "Devam ediyor");
             String key = complete ? "gui.checkpoint-completed" : "gui.checkpoint-await";
             Map<String, String> values = Map.of("line", Integer.toString(from + i + 1),
-                "amount", Long.toString(entry.amount()), "checkpoint_lore", "");
+                "amount", Long.toString(entry.amount()), "checkpoint_lore", String.join("\n", entry.lore()));
+            List<String> fallback = new ArrayList<>(List.of("§7" + status, "§f" + progress.amount() + " §7/ §f" + entry.amount()));
+            fallback.addAll(entry.lore());
             inv.setItem(slots[i], createGuiIcon(complete ? "checkpoint-completed" : "checkpoint-await",
                     (complete ? Material.LIME_DYE : Material.PAPER).name(), player,
                     getLang(key + "-name", (complete ? "§a" : "§e") + entry.name(), values),
-                    getLore(key + "-lore", List.of("§7" + status,
-                        "§f" + progress.amount() + " §7/ §f" + entry.amount()), values)));
+                    getLore(key + "-lore", fallback, values)));
         }
         if (page > 0) addPageButton(menu, deliveryLayout.slot("previous"), "previous", english,
                 viewer -> openDeliveryMenu(viewer, event, page - 1));

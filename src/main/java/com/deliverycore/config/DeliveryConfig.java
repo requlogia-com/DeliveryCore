@@ -1,6 +1,7 @@
 package com.deliverycore.config;
 
 import com.deliverycore.model.DeliveryDefinition;
+import com.deliverycore.model.ImportedDelivery;
 
 import java.util.List;
 import java.util.Map;
@@ -40,4 +41,8 @@ public interface DeliveryConfig {
      * @return an unmodifiable list of visible DeliveryDefinition objects
      */
     List<DeliveryDefinition> getVisibleDeliveries();
+
+    default Map<String, ImportedDelivery> getImportedDeliveries() {
+        return Map.of();
+    }
 }

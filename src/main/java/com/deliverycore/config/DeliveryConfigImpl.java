@@ -7,6 +7,9 @@ import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.*;
 
@@ -15,8 +18,11 @@ import java.util.*;
  * Supports loading from file path or input stream.
  */
 public class DeliveryConfigImpl implements DeliveryConfig {
-    
+    static final ZoneId DEFAULT_IMPORT_TIMEZONE = ZoneId.of("Europe/Istanbul");
+
     private final Map<String, DeliveryDefinition> deliveries;
+    private final Map<String, ImportedDelivery> importedDeliveries;
+    private final Map<String, Map<?, ?>> importedSections;
     
     /**
      * Creates a DeliveryConfigImpl from a file path.
@@ -25,7 +31,11 @@ public class DeliveryConfigImpl implements DeliveryConfig {
      * @throws IOException if the file cannot be read
      */
     public DeliveryConfigImpl(String filePath) throws IOException {
-        this(new FileInputStream(filePath));
+        this(Path.of(filePath), DEFAULT_IMPORT_TIMEZONE);
+    }
+
+    DeliveryConfigImpl(Path file, ZoneId importedTimezone) throws IOException {
+        this(readFile(file), importedTimezone);
     }
     
     /**
@@ -34,7 +44,38 @@ public class DeliveryConfigImpl implements DeliveryConfig {
      * @param inputStream the input stream containing YAML data
      */
     public DeliveryConfigImpl(InputStream inputStream) {
-        this.deliveries = parseDeliveries(inputStream);
+        this(readYaml(inputStream), DEFAULT_IMPORT_TIMEZONE);
+    }
+
+    private DeliveryConfigImpl(Map<String, Object> root, ZoneId importedTimezone) {
+        Map<String, DeliveryDefinition> definitions = parseDeliveries(root);
+        Map<String, ImportedDelivery> imports = new LinkedHashMap<>();
+        Map<String, Map<?, ?>> sections = new LinkedHashMap<>();
+        if (root != null && root.get("categories") instanceof Map<?, ?> categories) {
+            for (var entry : categories.entrySet()) {
+                if (!(entry.getKey() instanceof String id) || !(entry.getValue() instanceof Map<?, ?> values)) {
+                    throw new IllegalArgumentException("Delivery categories must have a name and configuration");
+                }
+                if (definitions.containsKey(id)) continue;
+                ImportedDelivery delivery = ImportedDeliveryParser.read(id, values, importedTimezone);
+                definitions.put(id, delivery.definition());
+                imports.put(id, delivery);
+                sections.put(id, values);
+            }
+        }
+        deliveries = Collections.unmodifiableMap(definitions);
+        importedDeliveries = Collections.unmodifiableMap(imports);
+        importedSections = Collections.unmodifiableMap(sections);
+    }
+
+    private static Map<String, Object> readYaml(InputStream input) {
+        return new Yaml(new SafeConstructor(new LoaderOptions())).load(input);
+    }
+
+    static Map<String, Object> readFile(Path file) throws IOException {
+        try (InputStream input = Files.newInputStream(file)) {
+            return readYaml(input);
+        }
     }
     
     /**
@@ -48,18 +89,16 @@ public class DeliveryConfigImpl implements DeliveryConfig {
             map.put(def.name(), def);
         }
         this.deliveries = Collections.unmodifiableMap(map);
+        this.importedDeliveries = Map.of();
+        this.importedSections = Map.of();
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, DeliveryDefinition> parseDeliveries(InputStream inputStream) {
-        Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
-        Map<String, Object> root = yaml.load(inputStream);
-        
-        if (root == null) {
-            return Collections.emptyMap();
-        }
-        
+    private Map<String, DeliveryDefinition> parseDeliveries(Map<String, Object> root) {
         Map<String, DeliveryDefinition> result = new LinkedHashMap<>();
+        if (root == null) {
+            return result;
+        }
         
         Object deliveriesObj = root.get("deliveries");
         if (deliveriesObj instanceof Map) {
@@ -74,7 +113,7 @@ public class DeliveryConfigImpl implements DeliveryConfig {
             }
         }
         
-        return Collections.unmodifiableMap(result);
+        return result;
     }
     
     @SuppressWarnings("unchecked")
@@ -219,6 +258,11 @@ public class DeliveryConfigImpl implements DeliveryConfig {
     public Optional<DeliveryDefinition> getDelivery(String name) {
         return Optional.ofNullable(deliveries.get(name));
     }
+
+    @Override
+    public Map<String, ImportedDelivery> getImportedDeliveries() {
+        return importedDeliveries;
+    }
     
     @Override
     public List<DeliveryDefinition> getEnabledDeliveries() {
@@ -244,10 +288,15 @@ public class DeliveryConfigImpl implements DeliveryConfig {
         Map<String, Object> deliveriesMap = new LinkedHashMap<>();
         
         for (DeliveryDefinition def : deliveries.values()) {
-            deliveriesMap.put(def.name(), serializeDelivery(def));
+            if (!importedSections.containsKey(def.name())) {
+                deliveriesMap.put(def.name(), serializeDelivery(def));
+            }
         }
         
         root.put("deliveries", deliveriesMap);
+        if (!importedSections.isEmpty()) {
+            root.put("categories", importedSections);
+        }
         
         DumperOptions options = new DumperOptions();
         options.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK);
@@ -336,6 +385,6 @@ public class DeliveryConfigImpl implements DeliveryConfig {
      * @return a new DeliveryConfigImpl instance
      */
     public static DeliveryConfigImpl fromYaml(String yamlContent) {
-        return new DeliveryConfigImpl(new ByteArrayInputStream(yamlContent.getBytes()));
+        return new DeliveryConfigImpl(new ByteArrayInputStream(yamlContent.getBytes(StandardCharsets.UTF_8)));
     }
 }

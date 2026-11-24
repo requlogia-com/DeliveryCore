@@ -1,9 +1,12 @@
 package com.deliverycore.config;
 
 import com.deliverycore.model.*;
+import org.yaml.snakeyaml.error.YAMLException;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.DateTimeException;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -75,7 +78,7 @@ public class ConfigManagerImpl implements ConfigManager {
             String deliveriesPath = dataFolder + File.separator + "deliveries.yml";
             File deliveriesFile = new File(deliveriesPath);
             if (deliveriesFile.exists()) {
-                deliveryConfig = new DeliveryConfigImpl(deliveriesPath);
+                deliveryConfig = new DeliveryConfigImpl(deliveriesFile.toPath(), loadImportedTimezone());
             } else {
                 deliveryConfig = new DeliveryConfigImpl(Collections.emptyList());
                 validationErrors.add(new ValidationError(
@@ -86,7 +89,13 @@ public class ConfigManagerImpl implements ConfigManager {
             deliveryConfig = new DeliveryConfigImpl(Collections.emptyList());
             validationErrors.add(new ValidationError(
                 "deliveries.yml", null, "Failed to load: " + e.getMessage(), ErrorSeverity.ERROR));
+        } catch (IllegalArgumentException | YAMLException e) {
+            LOGGER.log(Level.WARNING, "Invalid deliveries.yml", e);
+            deliveryConfig = new DeliveryConfigImpl(Collections.emptyList());
+            validationErrors.add(new ValidationError(
+                "deliveries.yml", null, "Failed to load: " + e.getMessage(), ErrorSeverity.CRITICAL));
         }
+        categoryConfig = ((CategoryConfigImpl) categoryConfig).withImportedDeliveries(deliveryConfig);
         
         // Load languages
         try {
@@ -108,6 +117,22 @@ public class ConfigManagerImpl implements ConfigManager {
         
         // Validate loaded configurations
         validationErrors.addAll(validateConfigurations());
+    }
+
+    private ZoneId loadImportedTimezone() {
+        File file = new File(dataFolder, "config.yml");
+        if (file.isFile()) {
+            try {
+                var settings = DeliveryConfigImpl.readFile(file.toPath());
+                if (settings != null && settings.get("general") instanceof Map<?, ?> general
+                        && general.get("timezone") instanceof String configured && !configured.isBlank()) {
+                    return ZoneId.of(configured.trim());
+                }
+            } catch (IOException | DateTimeException | YAMLException e) {
+                LOGGER.log(Level.WARNING, "Could not read general.timezone for imported deliveries", e);
+            }
+        }
+        return DeliveryConfigImpl.DEFAULT_IMPORT_TIMEZONE;
     }
 
     @Override
