@@ -604,6 +604,7 @@ public class DeliveryCorePlugin extends JavaPlugin implements Listener, TabCompl
     private void reloadAllSettings() {
         reloadConfig();
         dataManager.reloadAutoSaveInterval();
+        itemRegistry.reload();
         reloadMilestones();
         categoryService = new CategoryServiceImpl(configManager.getCategoryConfig());
         ((DeliveryServiceImpl) deliveryService).reloadConfiguration(configManager.getDeliveryConfig(), categoryService);

@@ -28,7 +28,7 @@ public final class DeliveryItemRegistry {
     public DeliveryItemRegistry(JavaPlugin plugin) {
         file = plugin.getDataFolder().toPath().resolve("custom-items.yml");
         externalItems = new ExternalItems(plugin.getServer().getPluginManager(), plugin.getLogger());
-        load();
+        reload();
     }
 
     public void register(String key, ItemStack stack) throws IOException {
@@ -62,7 +62,11 @@ public final class DeliveryItemRegistry {
         }
         ItemId ref = ItemId.parse(itemId);
         return switch (ref.namespace()) {
-            case "minecraft" -> stack.getType() == material(ref.id());
+            case "minecraft" -> {
+                Material vanilla = material(ref.id());
+                yield vanilla != null ? stack.getType() == vanilla
+                    : itemId != null && !itemId.contains(":") && stack.isSimilar(items.get(ref.id().toLowerCase(Locale.ROOT)));
+            }
             case "custom" -> stack.isSimilar(items.get(ref.id().toLowerCase(Locale.ROOT)));
             default -> externalItems.matches(ref.namespace(), ref.id(), stack);
         };
@@ -73,7 +77,10 @@ public final class DeliveryItemRegistry {
         ItemId ref = ItemId.parse(itemId);
         if ("minecraft".equals(ref.namespace())) {
             Material material = material(ref.id());
-            return material == null ? null : new ItemStack(material);
+            if (material != null) return new ItemStack(material);
+            if (itemId == null || itemId.contains(":")) return null;
+            ItemStack template = items.get(ref.id().toLowerCase(Locale.ROOT));
+            return template == null ? null : template.clone();
         }
         ItemStack template = "custom".equals(ref.namespace())
             ? items.get(ref.id().toLowerCase(Locale.ROOT))
@@ -97,8 +104,20 @@ public final class DeliveryItemRegistry {
         return normalized;
     }
 
-    private void load() {
+    public void reload() {
         if (Files.notExists(file)) {
+            Path imported = file.resolveSibling("custom_items.yml");
+            Map<String, ItemStack> loaded = new LinkedHashMap<>();
+            if (Files.isRegularFile(imported)) {
+                try {
+                    ImportedItems.read(imported).forEach((key, stack) -> loaded.put(normalizeKey(key), stack));
+                    save(loaded);
+                } catch (IOException e) {
+                    throw new IllegalStateException("Could not import " + imported, e);
+                }
+            }
+            items.clear();
+            items.putAll(loaded);
             return;
         }
         YamlConfiguration config = new YamlConfiguration();
@@ -112,15 +131,19 @@ public final class DeliveryItemRegistry {
             if (config.contains("items")) {
                 throw new IllegalStateException("Invalid items section in " + file);
             }
+            items.clear();
             return;
         }
+        Map<String, ItemStack> loaded = new LinkedHashMap<>();
         for (String key : section.getKeys(false)) {
             ItemStack stack = section.getItemStack(key);
             if (stack == null || stack.getType().isAir()) {
                 throw new IllegalStateException("Invalid registered item '" + key + "' in " + file);
             }
-            items.put(normalizeKey(key), stack);
+            loaded.put(normalizeKey(key), stack);
         }
+        items.clear();
+        items.putAll(loaded);
     }
 
     private void save(Map<String, ItemStack> updated) throws IOException {
